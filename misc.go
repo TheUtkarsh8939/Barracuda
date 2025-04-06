@@ -8,6 +8,15 @@ type Move struct {
 	square1 chess.Square
 	square2 chess.Square
 }
+type SearchOptions struct {
+	depth     uint8
+	blackTime int
+	whiteTime int
+	moveTime  int
+	isInf     bool
+	binc      int
+	winc      int
+}
 
 func InsertionSort(moves []*chess.Move, less func(a, b *chess.Move) bool) {
 	n := len(moves)

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"math"
+	"sort"
 
 	"github.com/corentings/chess"
 )
@@ -26,23 +28,38 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha float6
 
 	}
 	if depth == 0 {
-		eval := quiescence_search(position, int(alpha), int(beta), maximizer, 4, pst)
+		eval := quiescence_search(position, int(alpha), int(beta), maximizer, 1, pst)
 		// eval := EvaluatePos(position, pst)
 		transpositionTable[position.Hash()] = float64(eval) // Store evaluation
 		return float64(eval)
 	}
 	moves := position.ValidMoves()
-	InsertionSort(moves, func(a, b *chess.Move) bool {
-		return EvaluateMove(a, position, depth) > EvaluateMove(b, position, depth) // Sort best moves first
+	sort.Slice(moves, func(i, j int) bool {
+		return EvaluateMove(moves[i], position, depth) > EvaluateMove(moves[j], position, depth)
 	})
+	// InsertionSort(moves, func(a, b *chess.Move) bool {
+	// 	return EvaluateMove(a, position, depth) > EvaluateMove(b, position, depth) // Sort best moves first
+	// })
 	if maximizer {
 		bestScore := math.Inf(-1)
 		bestMove := &chess.Move{}
 		for i := 0; i < len(moves); i++ {
-			score := minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
-			if score > bestScore {
-				bestMove = moves[i]
-				bestScore = score
+			score := 0.0
+			if len(moves)/2 < i && depth >= 3 {
+				score = minimax(position.Update(moves[i]), depth-2, !maximizer, alpha, beta, pst)
+				if score > bestScore {
+					score := minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
+					if score > bestScore {
+						bestMove = moves[i]
+						bestScore = score
+					}
+				}
+			} else {
+				score = minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
+				if score > bestScore {
+					bestMove = moves[i]
+					bestScore = score
+				}
 			}
 			alpha = math.Max(alpha, score)
 			if beta <= alpha {
@@ -56,10 +73,22 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha float6
 		bestScore := math.Inf(1)
 		bestMove := &chess.Move{}
 		for i := 0; i < len(moves); i++ {
-			score := minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
-			if score < bestScore {
-				bestMove = moves[i]
-				bestScore = score
+			score := 0.0
+			if len(moves)/2 < i && depth >= 3 {
+				score = minimax(position.Update(moves[i]), depth-2, !maximizer, alpha, beta, pst)
+				if score < bestScore {
+					score := minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
+					if score < bestScore {
+						bestMove = moves[i]
+						bestScore = score
+					}
+				}
+			} else {
+				score = minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
+				if score < bestScore {
+					bestMove = moves[i]
+					bestScore = score
+				}
 			}
 			beta = math.Min(beta, score)
 
@@ -73,7 +102,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha float6
 
 }
 
-func rateAllMoves(position *chess.Position, depth uint8, pst map[chess.Color]map[chess.PieceType][64]int, isWhite bool) *chess.Move {
+func rateAllMoves(position *chess.Position, depth uint8, pst map[chess.Color]map[chess.PieceType][64]int, isWhite bool) (*chess.Move, float64) {
 	bestMove := &chess.Move{}
 	bestScore := math.Inf(-1)
 	if !isWhite {
@@ -100,16 +129,26 @@ func rateAllMoves(position *chess.Position, depth uint8, pst map[chess.Color]map
 		// fmt.Println("Current Best Move:", bestMove, "Score:", bestScore, "Last Searched:", move, "Score of", score)
 	}
 
-	return bestMove
+	return bestMove, bestScore
 }
-func iterativeDeepening(position *chess.Position, maxDepth uint8, pst map[chess.Color]map[chess.PieceType][64]int, isWhite bool) *chess.Move {
+func iterativeDeepening(position *chess.Position, maxDepth uint8, pst map[chess.Color]map[chess.PieceType][64]int, isWhite bool) {
+
 	bestMove := &chess.Move{}
+	bestScore := 0.0
 	for i := 0; i < int(maxDepth); i++ {
-		bestMove = rateAllMoves(position, uint8(i+1), pst, isWhite)
-		lastBestMoves = append(lastBestMoves, bestMove.String())
+		select {
+		case <-stopSearch:
+			fmt.Println("bestmove", bestMove)
+			return
+		default:
+			bestMove, bestScore = rateAllMoves(position, uint8(i+1), pst, isWhite)
+			lastBestMoves = append(lastBestMoves, bestMove.String())
+			fmt.Printf("info depth %d score cp %f \n", i+1, bestScore)
+		}
+
 	}
+	fmt.Println("bestmove", bestMove)
 	lastBestMoves = []string{}
 	killerMoveTable = resetKillerMoveTable(killerMoveTable)
 
-	return bestMove
 }
