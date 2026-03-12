@@ -2,13 +2,17 @@ package main
 
 import "github.com/corentings/chess"
 
-// Flip the board for black (mirror white's PST)
+// mirrorBoard flips a piece-square table vertically so that Black's PST
+// is the mirror image of White's. This ensures both sides use equivalent
+// positional incentives relative to their own starting side of the board.
+// For example, White's pawn advancement bonus toward rank 8 becomes
+// Black's pawn advancement bonus toward rank 1.
 func mirrorBoard(pst [64]int) [64]int {
 	var mirrored [64]int
 	for i := 0; i < 64; i++ {
 		rank := i / 8
 		file := i % 8
-		mirrored[i] = pst[(7-rank)*8+file]
+		mirrored[i] = pst[(7-rank)*8+file] // Reflect rank, keep file the same
 	}
 	return mirrored
 }
