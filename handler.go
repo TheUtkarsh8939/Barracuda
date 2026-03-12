@@ -1,27 +1,46 @@
 package main
 
+// maxKillerDepth is the maximum depth for killer move storage.
+// Using a fixed-size array avoids map hashing overhead for killer lookups.
+const maxKillerDepth = 64
+
+// killerEntry stores up to 2 killer moves for a given depth.
+type killerEntry struct {
+	moves [2]Move
+	count uint8
+}
+
+// killerTable is a fixed-size array of killer moves indexed by depth.
+// Replaces the previous map[uint8][]Move for faster access.
+var killerTable [maxKillerDepth]killerEntry
+
 // storeKillerMove records a move that caused a beta cutoff (a "killer move") at a given depth.
 // We keep at most 2 killers per depth; when a new killer arrives, the older one is shifted out.
 // These are searched early in sibling nodes at the same depth since they often cause cutoffs there too.
 func storeKillerMove(depth uint8, move Move) {
-	if len(killerMoveTable[depth]) < 2 {
-		killerMoveTable[depth] = append(killerMoveTable[depth], move)
+	if depth >= maxKillerDepth {
+		return
+	}
+	entry := &killerTable[depth]
+	if entry.count < 2 {
+		entry.moves[entry.count] = move
+		entry.count++
 	} else {
-		killerMoveTable[depth][1] = killerMoveTable[depth][0] // Demote slot 0 → slot 1
-		killerMoveTable[depth][0] = move                      // New killer takes slot 0
+		entry.moves[1] = entry.moves[0] // Demote slot 0 → slot 1
+		entry.moves[0] = move            // New killer takes slot 0
 	}
 }
 
-// resetKillerMoveTable shifts the killer move table by 2 depth levels after iterative deepening
-// moves to the next iteration. Killers from depth N in the previous search map to depth N+2
-// in the new search (since the root is now 2 plies deeper), preserving their usefulness.
-func resetKillerMoveTable(table map[uint8][]Move) map[uint8][]Move {
-	if len(table) < 3 {
-		return table
+// getKillerMoves returns the killer moves for a given depth and count of stored killers.
+func getKillerMoves(depth uint8) (Move, Move, uint8) {
+	if depth >= maxKillerDepth {
+		return Move{}, Move{}, 0
 	}
-	ntTable := make(map[uint8][]Move)
-	for i := uint8(2); i < uint8(len(table)); i++ {
-		ntTable[i] = table[i-2]
-	}
-	return ntTable
+	entry := &killerTable[depth]
+	return entry.moves[0], entry.moves[1], entry.count
+}
+
+// clearKillerTable resets the killer move table for a new search.
+func clearKillerTable() {
+	killerTable = [maxKillerDepth]killerEntry{}
 }

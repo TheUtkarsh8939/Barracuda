@@ -1,10 +1,13 @@
 package main
 
 import (
-	"math"
-
 	"github.com/corentings/chess"
 )
+
+// deltaMargin is the safety margin for delta pruning in quiescence search.
+// If the static eval plus the value of the captured piece plus this margin
+// cannot reach alpha, the capture is futile and can be skipped.
+const deltaMargin = 200
 
 // quiescence_search extends the search beyond the normal depth limit, but only for
 // "loud" moves (captures and checks). This solves the horizon effect: if minimax
@@ -14,9 +17,12 @@ import (
 // as a lower bound for the maximizer. If we're already better than beta without making
 // any move, the opponent wouldn't have allowed this line — prune immediately.
 //
+// Delta pruning is applied: captures that cannot possibly raise the score above alpha
+// (even with the full value of the captured piece plus a safety margin) are skipped.
+//
 // The depth parameter limits the quiescence search to prevent explosion
 // (positions with many forced captures could recurse very deeply otherwise).
-func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst map[chess.Color]map[chess.PieceType][64]int) int {
+func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst [3][7][64]int) int {
 	nodesVisited++
 
 	// Stand-pat evaluation: the score if we make no more captures ("stand pat").
@@ -45,10 +51,23 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
 			if move.HasTag(chess.Capture) || move.HasTag(chess.Check) {
+				// Delta pruning: if even winning the captured piece can't raise us to alpha, skip.
+				if move.HasTag(chess.Capture) {
+					victim := pos.Board().Piece(move.S2())
+					if victim.Type() != chess.NoPieceType {
+						if stand_eval+pieceValues[victim.Type()]+deltaMargin < alpha {
+							continue
+						}
+					}
+				}
 				newPos := pos.Update(move)
 				eval := quiescence_search(newPos, alpha, beta, false, depth-1, pst)
-				alpha = int(math.Max(float64(alpha), float64(eval)))
-				max_Eval = int(math.Max(float64(eval), float64(max_Eval)))
+				if eval > alpha {
+					alpha = eval
+				}
+				if eval > max_Eval {
+					max_Eval = eval
+				}
 				// Beta cutoff: minimizer has a better option elsewhere.
 				if beta <= alpha {
 					break
@@ -61,10 +80,23 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
 			if move.HasTag(chess.Capture) || move.HasTag(chess.Check) {
+				// Delta pruning (minimizer): if even winning the captured piece can't lower us to beta, skip.
+				if move.HasTag(chess.Capture) {
+					victim := pos.Board().Piece(move.S2())
+					if victim.Type() != chess.NoPieceType {
+						if stand_eval-pieceValues[victim.Type()]-deltaMargin > beta {
+							continue
+						}
+					}
+				}
 				newPos := pos.Update(move)
 				eval := quiescence_search(newPos, alpha, beta, true, depth-1, pst)
-				beta = int(math.Min(float64(beta), float64(eval)))
-				minEval = int(math.Min(float64(eval), float64(minEval)))
+				if eval < beta {
+					beta = eval
+				}
+				if eval < minEval {
+					minEval = eval
+				}
 				// Alpha cutoff: maximizer has a better option elsewhere.
 				if beta <= alpha {
 					break
