@@ -151,12 +151,12 @@ func EvaluateMove(move *chess.Move, position *chess.Position, depth uint8) int {
 
 	// Check bonus: checks are usually forcing and worth exploring early.
 	if move.HasTag(chess.Check) {
-		score += 50
+		score += 250
 	}
 
 	// Castling is generally positive for king safety.
 	if isCastlingMove(move) {
-		score += 40
+		score += 150
 	}
 
 	// Killer move bonus: this move caused a beta cutoff in a sibling node at this depth,
@@ -164,7 +164,7 @@ func EvaluateMove(move *chess.Move, position *chess.Position, depth uint8) int {
 	k0, k1, kCount := getKillerMoves(depth)
 	moveKey := Move{move.S1(), move.S2()}
 	if kCount > 1 && (k0 == moveKey || k1 == moveKey) {
-		score += 70
+		score += 200
 	}
 
 	return score

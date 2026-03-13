@@ -38,7 +38,7 @@ import (
 var stopSearch = make(chan bool) // Channel to signal stopping the search process.
 
 func main() {
-	// Benchmark mode: run a depth-5 search from the starting position and print timing info.
+	// Benchmark mode: run a depth-7 search from the starting position and print timing info.
 	// Usage: BENCH=1 ./barracuda
 	if os.Getenv("BENCH") == "1" {
 		game := chess.NewGame()
@@ -52,7 +52,7 @@ func main() {
 		lastBestMoves = make(map[Move]bool)
 
 		startTime := time.Now()
-		iterativeDeepening(game.Position(), 5, pst, isWhite)
+		iterativeDeepening(game.Position(), 7, pst, isWhite)
 		elapsed := time.Since(startTime)
 		fmt.Printf("BENCH: nodes=%d time=%v\n", nodesVisited, elapsed)
 		return
