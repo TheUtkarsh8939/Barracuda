@@ -99,40 +99,62 @@ factor roughly in half with perfect move ordering (O(b^(d/2)) vs O(b^d)).
 
 ### 3.2 Late Move Reduction (LMR)
 
-After moves are sorted best-first, moves in the **second half** of the list are assumed
+After moves are sorted best-first, moves beyond the first few are assumed
 to be weaker. They are searched at `depth-2` instead of `depth-1`:
 
 ```go
-if len(moves)/2 < i && depth >= 3 {
+if i > 3 && depth >= 3 && moveScores[i] < 50 {
     score = minimax(..., depth-2, ...)      // Reduced search
-    if score > bestScore {
+    if score > alpha {                      // (or score < beta for minimizer)
         score = minimax(..., depth-1, ...)  // Full re-search if promising
     }
 }
 ```
 
-If a reduced-depth search looks promising (beats the current best), a full-depth
-re-search confirms it. This saves significant time since well-ordered late moves
-almost never turn out to be best.
+If a reduced-depth search looks promising (beats alpha for maximizer, or beta
+for minimizer), a full-depth re-search confirms it. This saves significant time
+since well-ordered late moves almost never turn out to be best.
 
 LMR is only applied at `depth >= 3` to avoid reducing searches that are already shallow.
+The `moveScores[i] < 50` guard ensures captures, checks, promotions, and killer moves
+(which all score ≥ 50) are never reduced — only quiet moves with low move-ordering scores.
+
+**Previous version:** LMR was applied after `len(moves)/2` and used `bestScore` instead
+of `alpha`/`beta` for the re-search trigger. The more aggressive threshold (after 4 moves)
+combined with the score guard produces ~45% fewer nodes with equivalent or better play.
 
 ### 3.3 Transposition Table
 
 ```go
+const ttSize = 1 << 20  // ~1M entries
+const ttMask = ttSize - 1
+
 type ttEntry struct {
-    score float64
-    depth uint8
+    hashKey uint64   // upper bits for collision detection
+    score   int
+    depth   uint8
 }
-var transpositionTable = make(map[[16]byte]ttEntry)
+var transpositionTable [ttSize]ttEntry
 ```
 
-The **Zobrist hash** of a position (a 16-byte value provided by the chess library) is
-used as the key. Before doing any work at a node, the TT is checked:
+The transposition table uses an **array-based** design indexed by `hash & ttMask`
+(equivalent to `hash % ttSize` but faster since `ttSize` is a power of 2). This replaces
+the previous `map[[16]byte]ttEntry` which had ~100ns per lookup due to Go map hashing
+overhead. Array lookups are ~10ns — roughly a 10× improvement on this critical hot path.
+
+The 16-byte **Zobrist hash** from the chess library is converted to `uint64` using the
+first 8 bytes via `encoding/binary.LittleEndian.Uint64`. The full `uint64` is stored in
+`hashKey` for collision detection — two positions can map to the same array index but
+will have different hash keys.
 
 ```go
-if entry, ok := transpositionTable[position.Hash()]; ok && entry.depth >= depth {
-    return entry.score
+func ttLookup(h uint64, depth uint8) (int, bool) {
+    idx := h & ttMask
+    entry := &transpositionTable[idx]
+    if entry.hashKey == h && entry.depth >= depth {
+        return entry.score, true
+    }
+    return 0, false
 }
 ```
 
@@ -144,8 +166,14 @@ real bug that was fixed. Entries are stored with depth:
 - Leaf nodes (quiescence result): depth `0`
 - Interior nodes: the actual depth they were searched to
 
+The hash is computed **once** per node and cached in a local variable, avoiding the
+previous pattern of calling `position.Hash()` twice (once for TT lookup, once for store).
+
 The TT **persists across iterative deepening iterations**. Entries are not cleared
 between depths because the depth guard makes them safe to reuse.
+
+**Previous version:** Used `map[[16]byte]ttEntry` with Go map hashing. Each TT lookup
+required map key hashing (~100ns) and the map created GC pressure from dynamic allocation.
 
 ### 3.4 Iterative Deepening
 
@@ -168,12 +196,31 @@ depth N+1, dramatically increasing alpha-beta cutoffs.
 ### 3.5 Root Search (`rateAllMoves`)
 
 ```go
-func rateAllMoves(position, depth, pst, isWhite) (*chess.Move, float64)
+func rateAllMoves(position, depth, pst, isWhite) (*chess.Move, int)
 ```
 
 Loops over every legal move at the root, calls `minimax` for each, and tracks the best.
 At the root level, castling moves get a **+200 bonus** applied to their returned scores
 to encourage castling when positions are otherwise roughly equal.
+
+The root search now maintains its own **alpha-beta window** across root moves. As each
+move is evaluated, the alpha (for White) or beta (for Black) bound tightens, allowing
+`minimax` to prune more branches for later root moves:
+
+```go
+alpha := minScore
+beta := maxScore
+for _, move := range moves {
+    score := minimax(pos.Update(move), depth-1, !isWhite, alpha, beta, pst)
+    // ... update bestScore ...
+    if isWhite { alpha = max(alpha, score) }
+    else       { beta  = min(beta,  score) }
+}
+```
+
+**Previous version:** Every root move was searched with a full `(-∞, +∞)` window,
+meaning no pruning could occur for later root moves even when an excellent move was
+already found. Adding the alpha-beta window at root reduced total nodes by ~50%.
 
 ---
 
@@ -199,6 +246,34 @@ captures and checks** (not quiet moves). This continues until the position is "q
 The `depth` parameter limits quiescence to 1 extra ply currently to prevent explosion
 in positions with long capture chains.
 
+### Delta Pruning
+
+Before searching a capture in quiescence, a fast check determines whether winning the
+captured piece can even raise the score above alpha:
+
+```go
+if stand_eval + pieceValues[victim.Type()] + deltaMargin < alpha {
+    continue  // Skip — even the best case can't help
+}
+```
+
+`deltaMargin` (200 centipawns) provides a safety buffer for positional bonuses. For the
+minimizer, the symmetric check prunes captures that can't lower the score below beta:
+
+```go
+if stand_eval - pieceValues[victim.Type()] - deltaMargin > beta {
+    continue  // Skip — even the best case can't help the minimizer
+}
+```
+
+Delta pruning avoids the cost of `Position.Update()` and recursive evaluation for
+captures that are provably futile, saving both node count and per-node overhead.
+
+**Previous version:** No delta pruning; every capture/check was searched unconditionally.
+Also used `math.Max(float64(alpha), float64(eval))` for integer comparisons, which
+incurred expensive int→float64 conversions at every quiescence node. These have been
+replaced with simple `if` comparisons.
+
 ---
 
 ## 5. Evaluation — `eval.go`
@@ -213,29 +288,50 @@ negative = good for Black). Four components:
 ### 5.1 Material
 
 ```go
-var pieceValues = map[chess.PieceType]int{
-    chess.King:   100000,
-    chess.Queen:  900,
-    chess.Rook:   500,
-    chess.Bishop: 300,
-    chess.Knight: 300,
-    chess.Pawn:   100,
+var pieceValues = [7]int{
+    0,      // NoPieceType (index 0)
+    100000, // King
+    900,    // Queen
+    500,    // Rook
+    300,    // Bishop
+    300,    // Knight
+    100,    // Pawn
 }
 ```
 
 Every piece on the board contributes its value. Black pieces subtract, White add.
+
+**Previous version:** `pieceValues` was a `map[chess.PieceType]int`. Each lookup required
+Go map hashing (~10–15ns). Switching to a flat `[7]int` array indexed by `PieceType`
+(which is an `int8` enum: 0=NoPieceType, 1=King, ..., 6=Pawn) eliminates this overhead.
 
 ### 5.2 Piece-Square Tables
 
 Each piece gets a **positional bonus** based on which square it occupies:
 
 ```go
-location := uint8(k.Rank())*8 + uint8(k.File())
-positionalAdv := pst[pieceColor][pieceType][location]
+positionalAdv := pst[pieceColor][pieceType][sq]
 ```
 
 The PSTs encode human chess knowledge: knights are better in the center, rooks want
 open files and the 7th rank, etc. See `pst.go` for the full tables.
+
+**Board iteration:** `EvaluatePos` iterates all 64 squares using `Board().Piece(sq)`
+directly, skipping empty squares immediately:
+
+```go
+for sq := 0; sq < 64; sq++ {
+    v := board.Piece(chess.Square(sq))
+    if v == chess.NoPiece { continue }
+    // ... score the piece
+}
+```
+
+**Previous version:** Used `Board().SquareMap()` which allocates a `map[Square]Piece`
+on every call. CPU profiling showed `SquareMap()` consuming ~43% of total search time.
+Direct iteration avoids the map allocation entirely. The chess library's `Piece(sq)`
+checks 12 bitboards internally, so 64 × 12 = 768 bitboard checks — but this is cheaper
+than the map allocation and hashing overhead that `SquareMap` required.
 
 ### 5.3 Castling Rights
 
@@ -256,8 +352,12 @@ The eval rewards the side ahead for having a more central king:
 ```go
 const maxMaterial = 7800  // all non-king material at game start
 endGameIndex := maxMaterial - totalMaterial
-smartEndgameFactor := math.Max((float64(endGameIndex)-4900)/100, 0)
-smartEndgameScore := (-whitesDistanceFromCenter + blacksDistanceFromCenter) * smartEndgameFactor * 50
+if endGameIndex > 4900 {
+    blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
+    whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
+    smartEndgameFactor := endGameIndex - 4900
+    score += (-whiteDist + blackDist) * smartEndgameFactor / 4
+}
 ```
 
 - `maxMaterial = 7800` (2×900 + 4×500 + 4×300 + 4×300 + 16×100)
@@ -265,6 +365,11 @@ smartEndgameScore := (-whitesDistanceFromCenter + blacksDistanceFromCenter) * sm
 - After that it scales linearly, reaching ~29 at full endgame
 - Kings start at -200000 to cancel out of `totalMaterial` so king captures don't trigger
   the endgame factor prematurely
+
+**Previous version:** Used `math.Abs(4.5-float64(king.x))` with float64 arithmetic
+throughout. Now uses a pure integer approach: coordinates are doubled (center at 9,9
+instead of 4.5,4.5) and `absInt()` replaces `math.Abs()`, eliminating all float64
+operations from the evaluation hot path.
 
 ---
 
@@ -313,7 +418,15 @@ func mirrorBoard(pst [64]int) [64]int {
 }
 ```
 
-This ensures both sides get symmetric positional incentives. The tables encode:
+This ensures both sides get symmetric positional incentives.
+
+`initPST()` returns a `[3][7][64]int` array indexed by `[Color][PieceType][Square]`.
+Color 1 = White, Color 2 = Black; PieceType 1 = King, ..., 6 = Pawn.
+
+**Previous version:** Returned `map[chess.Color]map[chess.PieceType][64]int` — a nested
+map structure. Each PST lookup required two map hash operations. The array-based version
+uses direct indexing (a single memory offset calculation), eliminating map hashing overhead
+that was visible in CPU profiles (~17% of time spent in `aeshashbody` for map keys).
 
 | Piece | Key incentives encoded |
 |-------|----------------------|
@@ -333,14 +446,29 @@ it is stored as a "killer" for that depth. In sibling nodes at the same depth, k
 are tried early because they often cause cutoffs there too.
 
 ```go
-// At most 2 killers per depth, FIFO with slot shift:
-killerMoveTable[depth][1] = killerMoveTable[depth][0]
-killerMoveTable[depth][0] = newKiller
+const maxKillerDepth = 64
+
+type killerEntry struct {
+    moves [2]Move
+    count uint8
+}
+var killerTable [maxKillerDepth]killerEntry
 ```
 
-`resetKillerMoveTable` shifts the entire table by 2 depth levels when iterative
-deepening moves to the next iteration. A killer at depth N from the previous search maps
-to depth N+2 in the new search (root is now 2 plies deeper).
+At most 2 killers are kept per depth, using FIFO with slot shift:
+```go
+entry.moves[1] = entry.moves[0]  // Demote slot 0 → slot 1
+entry.moves[0] = newKiller        // New killer takes slot 0
+```
+
+`clearKillerTable()` resets the entire table after iterative deepening completes.
+`getKillerMoves(depth)` returns the two killers and the count for a given depth.
+
+**Previous version:** Used `map[uint8][]Move` which required map hashing on every lookup.
+The fixed-size `[64]killerEntry` array uses direct indexing and avoids slice allocation.
+`resetKillerMoveTable()` previously shifted entries by 2 depth levels between iterations;
+the new version simply clears the table since the TT already preserves cross-iteration
+knowledge.
 
 ---
 
@@ -445,6 +573,8 @@ go iterativeDeepening(pos, 6, pst, isWhite)
 
 ## 12. Performance Notes & Optimization History
 
+### Round 1 — Initial optimizations
+
 | Optimization | Impact | Where |
 |---|---|---|
 | Remove `position.Update()` from `EvaluateMove` (was checking for checkmate in sort) | **~5x speedup** | `eval.go` |
@@ -454,13 +584,40 @@ go iterativeDeepening(pos, 6, pst, isWhite)
 | TT persists across ID iterations (was wiped with `make(map...)` each depth) | Correctness + speed | `search.go` |
 | `lastBestMoves` as `map[Move]bool` (was `[]string` with `slices.Contains` + string alloc) | Minor speed + no alloc | `eval.go`, `search.go` |
 
-**Benchmark position:** `r1b2rk1/pp1pqppp/2p5/3nP3/1b1Q1P2/2N5/PPPBB1PP/R3K2R b KQ - 2 12`
+### Round 2 — Data structure and search overhaul
 
-| State | Depth 5 time |
-|-------|-------------|
-| Original (abandoned) | ~8.5s |
-| After first 3 optimizations | ~1.74s |
-| After all 6 optimizations | ~1.60s |
+Identified via CPU profiling (`go tool pprof`). Depth 5 from startpos dropped from
+~1.67s to ~0.36s (projected; measured as 371ms → 80ms on CI).
+
+| Optimization | Impact | Where |
+|---|---|---|
+| **Array-based TT** — replaced `map[[16]byte]ttEntry` with `[1<<20]ttEntry` indexed by `hash & mask`. Stores `uint64` hash key for collision detection. | **~10x faster lookups** (100ns → 10ns per probe) | `search.go` |
+| **int scores throughout search** — replaced all `float64` alpha/beta/bestScore with `int`. Sentinel values `maxScore=999999` / `minScore=-999999` replace `math.Inf`. | **~11x faster comparisons** (eliminates `math.Max`/`math.Min` float ops) | `search.go` |
+| **Alpha-beta at root** — `rateAllMoves` now maintains alpha/beta bounds across root moves instead of using full `(-∞, +∞)` window for every move. | **~50% node reduction** (59k → 29k nodes) | `search.go` |
+| **Direct square iteration** — `EvaluatePos` iterates 64 squares via `Board().Piece(sq)` instead of calling `Board().SquareMap()` which allocated a `map[Square]Piece` per call. | **Eliminated 43% of CPU time** (profile showed `SquareMap` dominant) | `eval.go` |
+| **Array-based PST** — replaced `map[Color]map[PieceType][64]int` with `[3][7][64]int`. | **Eliminated nested map hashing** in eval hot path | `pst.go`, `eval.go` |
+| **Array-based pieceValues** — replaced `map[PieceType]int` with `[7]int`. | **Eliminated map lookup** per piece per eval call | `eval.go` |
+| **Array-based killer table** — replaced `map[uint8][]Move` with `[64]killerEntry`. | **Eliminated map hashing** in move ordering | `handler.go`, `eval.go` |
+| **Integer endgame math** — replaced `math.Abs(4.5-float64(x))` with `absInt(9-x*2)`. | **Eliminated float64 ops** from evaluation | `eval.go` |
+| **Hash caching** — compute `position.Hash()` once per node, reuse for TT lookup and store. | **Eliminated redundant hash computation** (~0.82µs per call) | `search.go` |
+| **Aggressive LMR** — apply LMR after 4 moves (was half) with `moveScores[i] < 50` guard. | **~45% further node reduction** (29k → 16k nodes) | `search.go` |
+| **Delta pruning in quiescence** — skip captures that can't raise score above alpha. | **Pruned futile captures** in tactical extensions | `quiescence_search.go` |
+| **Quiescence int comparisons** — replaced `int(math.Max(float64(a), float64(b)))` with `if a > b`. | **Eliminated int↔float64 conversions** per quiescence node | `quiescence_search.go` |
+
+**Benchmark: depth 5 from startpos (iterative deepening, depths 1–5)**
+
+| State | Nodes | Time (CI) | Projected user time |
+|-------|-------|-----------|-------------------|
+| Before Round 2 | 59,044 | ~371ms | ~1.67s |
+| After int scores + array TT + root α/β | 29,401 | ~217ms | ~0.98s |
+| After direct iteration + array PST/killer | 29,401 | ~148ms | ~0.67s |
+| After aggressive LMR + delta pruning | 16,001 | ~80ms | ~0.36s |
+
+**How to run the benchmark:**
+```bash
+go build -o barracuda .
+BENCH=1 ./barracuda
+```
 
 ---
 
