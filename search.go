@@ -83,7 +83,7 @@ func clearTT() {
 // list are searched at depth-2 instead of depth-1. If they beat the current best,
 // a full re-search at depth-1 is done to confirm. This saves significant time since
 // later moves (after good ordering) are unlikely to be best.
-func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, pst [3][7][64]int) int {
+func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, pst [3][3][7][64]int) int {
 	nodesVisited++
 
 	// Compute hash once and reuse for both TT lookup and store.
@@ -139,7 +139,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			var score int
 			// Late Move Reduction: moves beyond the first few are likely weaker after good ordering.
 			// Search them at reduced depth first; only do a full search if they look promising.
-			if i > 3 && depth >= 3 && moveScores[i] < 50 {
+			if i > len(moves)*2/5 && depth >= 3 && moveScores[i] < 50 {
 				score = minimax(position.Update(moves[i]), depth-2, !maximizer, alpha, beta, pst)
 				if score > alpha {
 					// Promising — confirm with a full-depth search.
@@ -203,7 +203,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 // depth-aware entries from shallower searches remain valid and accelerate deeper ones.
 // Castling gets a +200 root bonus to encourage the engine to castle when it's roughly equal.
 // Uses alpha-beta window at root level to prune moves that can't improve on the best found so far.
-func rateAllMoves(position *chess.Position, depth uint8, pst [3][7][64]int, isWhite bool) (*chess.Move, int) {
+func rateAllMoves(position *chess.Position, depth uint8, pst [3][3][7][64]int, isWhite bool) (*chess.Move, int) {
 	bestMove := &chess.Move{}
 	bestScore := minScore
 	alpha := minScore
@@ -250,7 +250,7 @@ func rateAllMoves(position *chess.Position, depth uint8, pst [3][7][64]int, isWh
 //     boost move ordering at deeper depths, increasing alpha-beta cutoffs.
 //
 // UCI engines emit "info depth X score cp Y" lines so the GUI can track search progress.
-func iterativeDeepening(position *chess.Position, maxDepth uint8, pst [3][7][64]int, isWhite bool) {
+func iterativeDeepening(position *chess.Position, maxDepth uint8, pst [3][3][7][64]int, isWhite bool) {
 	bestMove := &chess.Move{}
 	bestScore := 0
 	for i := 0; i < int(maxDepth); i++ {

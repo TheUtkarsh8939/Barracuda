@@ -4,6 +4,9 @@ import (
 	"github.com/corentings/chess"
 )
 
+// Last Calculated Total material
+var lastTotalMaterial int = 0
+
 // pieceValues stores centipawn values indexed by PieceType (int8).
 // Using an array instead of a map eliminates map hashing overhead in the hot path.
 // Index 0 = NoPieceType, 1 = King, 2 = Queen, 3 = Rook, 4 = Bishop, 5 = Knight, 6 = Pawn
@@ -25,6 +28,47 @@ func absInt(x int) int {
 	return x
 }
 
+func clampInt(x int, lo int, hi int) int {
+	if x < lo {
+		return lo
+	}
+	if x > hi {
+		return hi
+	}
+	return x
+}
+
+// phaseWeights returns start/mid/end weights normalized to 24.
+func phaseWeights(totalMaterial int) (int, int, int) {
+	const maxMaterial = 7800
+
+	startWeight := 0
+	if totalMaterial > 5200 {
+		startWeight = (totalMaterial - 5200) * 24 / (maxMaterial - 5200)
+	}
+	startWeight = clampInt(startWeight, 0, 24)
+
+	endWeight := 0
+	if totalMaterial < 2600 {
+		endWeight = (2600 - totalMaterial) * 24 / 2600
+	}
+	endWeight = clampInt(endWeight, 0, 24)
+
+	midWeight := 24 - startWeight - endWeight
+	if midWeight < 0 {
+		// Renormalize edge cases so weights always sum to 24.
+		sum := startWeight + endWeight
+		if sum == 0 {
+			return 0, 24, 0
+		}
+		startWeight = startWeight * 24 / sum
+		endWeight = 24 - startWeight
+		midWeight = 0
+	}
+
+	return startWeight, midWeight, endWeight
+}
+
 // EvaluatePos returns a static evaluation of the position in centipawns from White's perspective.
 // Positive = good for White, negative = good for Black.
 //
@@ -34,13 +78,17 @@ func absInt(x int) int {
 //  3. Castling rights: bonus for retaining the right to castle (king safety indicator).
 //  4. Endgame king centralization: as material drops, the winning side's king is rewarded
 //     for being near the center (active king is critical in endgames).
-func EvaluatePos(position *chess.Position, pst [3][7][64]int) int {
+func EvaluatePos(position *chess.Position, pst [3][3][7][64]int) int {
 	board := position.Board()
 	score := 0
 	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
 	// Start at -200000 to cancel out both kings' values from the material total.
 	// We only want non-king material to drive the endgame detection index.
 	totalMaterial := -200000
+
+	opening := 0
+	middle := 0
+	end := 0
 	// Iterate squares directly instead of calling SquareMap() to avoid map allocation.
 	for sq := 0; sq < 64; sq++ {
 		v := board.Piece(chess.Square(sq))
@@ -49,11 +97,14 @@ func EvaluatePos(position *chess.Position, pst [3][7][64]int) int {
 		}
 		pieceColor := v.Color()
 		pieceType := v.Type()
+		//Calculate Weights
 		// Square index is already flat [0,63] for PST lookup.
-		positionalAdv := pst[pieceColor][pieceType][sq]
+		opening = pst[0][0][pieceType][sq]
+		middle = pst[1][0][pieceType][sq]
+		end = pst[2][0][pieceType][sq]
 		material := pieceValues[pieceType]
 		totalMaterial += material
-		sc := positionalAdv + material
+		sc := material
 		// Negate score for Black pieces since we evaluate from White's perspective.
 		if pieceColor == chess.Black {
 			sc = -sc
@@ -79,6 +130,9 @@ func EvaluatePos(position *chess.Position, pst [3][7][64]int) int {
 	// 2 queens (1800) + 4 rooks (2000) + 4 bishops (1200) + 4 knights (1200) + 16 pawns (1600)
 	const maxMaterial = 7800
 	endGameIndex := maxMaterial - totalMaterial
+	lastTotalMaterial = totalMaterial
+	wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
+	score += opening*wopening + middle*wmiddle + end*wend
 	// Only activate endgame king centralization after ~4900 material is traded.
 	if endGameIndex > 4900 {
 		// Use integer-based distance approximation (Manhattan distance from center ~4.5).
@@ -151,7 +205,7 @@ func EvaluateMove(move *chess.Move, position *chess.Position, depth uint8) int {
 
 	// Check bonus: checks are usually forcing and worth exploring early.
 	if move.HasTag(chess.Check) {
-		score += 250
+		score += 100
 	}
 
 	// Castling is generally positive for king safety.

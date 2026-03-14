@@ -1,3 +1,8 @@
+# NOTE
+>The project is now discontinued due to an unidentified bug causing move repetions and weird moves if anybody ever finds it please tell me, the search functions are perfectly usable the issue is in either Evaluation or UCI Implemantion
+
+>I am currently rewrting the engine is C for better performance, this project will be archived
+
 # Barracuda
 
 Barracuda is a Go chess engine built on top of `github.com/corentings/chess`.

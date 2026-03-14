@@ -40,7 +40,7 @@ var stopSearch = make(chan bool) // Channel to signal stopping the search proces
 func main() {
 	// Benchmark mode: run a depth-7 search from the starting position and print timing info.
 	// Usage: BENCH=1 ./barracuda
-	if os.Getenv("BENCH") == "1" {
+	if os.Getenv("MODE") == "1" {
 		game := chess.NewGame()
 		pst := initPST()
 		isWhite := true
@@ -52,9 +52,14 @@ func main() {
 		lastBestMoves = make(map[Move]bool)
 
 		startTime := time.Now()
-		iterativeDeepening(game.Position(), 7, pst, isWhite)
+		iterativeDeepening(game.Position(), 5, pst, isWhite)
 		elapsed := time.Since(startTime)
 		fmt.Printf("BENCH: nodes=%d time=%v\n", nodesVisited, elapsed)
+		return
+	} else if os.Getenv("MODE") == "2" {
+		pst := initPST()
+		sq := pst[pstMiddle][chess.Black][chess.Pawn][chess.A6]
+		print(sq)
 		return
 	}
 
@@ -77,6 +82,8 @@ func main() {
 	fmt.Println("uciok")
 
 	firstPosCmd := true // Tracks if the "position" command is the first one received.
+	//Move list for opening book(not implemented yet)
+	moveList := []string{}
 
 	// Main loop to process UCI commands.
 	for scanner.Scan() {
@@ -93,6 +100,7 @@ func main() {
 		} else if strings.HasPrefix(command, "position") {
 			// Handle the "position" command to set up the board state.
 			tokens := strings.Split(command, " ")
+			fmt.Println(tokens)
 			if len(tokens) > 3 && firstPosCmd {
 				isWhite = false
 			}
@@ -106,21 +114,36 @@ func main() {
 					game.Move(move)
 					if err != nil {
 						fmt.Println(err)
+
 					}
-					fmt.Println(game.Position().Board().Draw())
+					moveList = append(moveList, tokens[i])
+					// fmt.Println(game.Position().Board().Draw())
+				}
+				if len(moveList)%2 != 0 {
+					isWhite = false
 				}
 			} else {
 				// Set up the board to a custom position using FEN notation.
-				fen, _ := chess.FEN(tokens[1] + " w kqKQ 0 0 w")
-				game = chess.NewGame(fen)
-				for i := 3; i < len(tokens); i++ {
-					move, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), tokens[i])
-					game.Move(move)
-					if err != nil {
-						fmt.Println(err)
-					}
-					fmt.Println(game.Position().Board().Draw())
+				fenString := tokens[2] + " " + tokens[3] + " " + tokens[4] + " " + tokens[5] + " " + tokens[6] + " " + tokens[7]
+				fen, err := chess.FEN(fenString)
+				if err != nil {
+					fmt.Println("Invalid FEN string:", err)
+					continue
 				}
+				game = chess.NewGame(fen)
+				for i := 9; i < len(tokens); i++ {
+					moveList = append(moveList, tokens[i])
+				}
+				// fen, _ := chess.FEN(tokens[2] + " " + tokens[3] + " " + tokens[4] + " " + tokens[5] + " " + tokens[6] + " " + tokens[7])
+				// game = chess.NewGame(fen)
+				// for i := 3; i < len(tokens); i++ {
+				// 	move, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), tokens[i])
+				// 	game.Move(move)
+				// 	if err != nil {
+				// 		fmt.Println(err)
+				// 	}
+				// 	fmt.Println(game.Position().Board().Draw())
+				// }
 			}
 		} else if strings.HasPrefix(command, "go") {
 			// Handle the "go" command to start the search for the best move.
@@ -133,6 +156,10 @@ func main() {
 		} else if command == "stop" {
 			// Handle the "stop" command to halt the search process.
 			stopSearch <- true
+		} else if command == "debug" {
+			//Custom Instructions LOL
+			fmt.Println(moveList)
+			fmt.Println(game.Position().Board().Draw())
 		}
 	}
 }
