@@ -33,20 +33,20 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		return stand_eval
 	}
 
-	// Stand-pat beta cutoff: if the static eval already exceeds beta,
-	// the opponent wouldn't allow this position — no need to search captures.
-	if stand_eval >= beta {
-		return stand_eval
-	}
-
-	// Stand-pat improves alpha: we can "do nothing" and already beat our previous best.
-	if stand_eval > alpha {
-		alpha = stand_eval
-	}
-
 	vm := pos.ValidMoves()
 
 	if maximizer {
+		// Stand-pat beta cutoff: if the static eval already exceeds beta,
+		// the opponent wouldn't allow this position — no need to search captures.
+		if stand_eval >= beta {
+			return stand_eval
+		}
+
+		// Stand-pat improves alpha: we can "do nothing" and already beat our previous best.
+		if stand_eval > alpha {
+			alpha = stand_eval
+		}
+
 		max_Eval := stand_eval
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
@@ -76,6 +76,15 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		}
 		return max_Eval
 	} else {
+		// Symmetric stand-pat logic for the minimizing side.
+		if stand_eval <= alpha {
+			return stand_eval
+		}
+
+		if stand_eval < beta {
+			beta = stand_eval
+		}
+
 		minEval := stand_eval
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.

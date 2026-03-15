@@ -86,9 +86,9 @@ func EvaluatePos(position *chess.Position, pst [3][3][7][64]int) int {
 	// We only want non-king material to drive the endgame detection index.
 	totalMaterial := -200000
 
-	opening := 0
-	middle := 0
-	end := 0
+	openingScore := 0
+	middleScore := 0
+	endScore := 0
 	// Iterate squares directly instead of calling SquareMap() to avoid map allocation.
 	for sq := 0; sq < 64; sq++ {
 		v := board.Piece(chess.Square(sq))
@@ -97,17 +97,18 @@ func EvaluatePos(position *chess.Position, pst [3][3][7][64]int) int {
 		}
 		pieceColor := v.Color()
 		pieceType := v.Type()
-		//Calculate Weights
 		// Square index is already flat [0,63] for PST lookup.
-		opening = pst[0][0][pieceType][sq]
-		middle = pst[1][0][pieceType][sq]
-		end = pst[2][0][pieceType][sq]
+		opening := pst[pstStart][pieceColor][pieceType][sq]
+		middle := pst[pstMiddle][pieceColor][pieceType][sq]
+		end := pst[pstEnd][pieceColor][pieceType][sq]
 		material := pieceValues[pieceType]
 		totalMaterial += material
 		sc := material
+		pstSign := 1
 		// Negate score for Black pieces since we evaluate from White's perspective.
 		if pieceColor == chess.Black {
 			sc = -sc
+			pstSign = -1
 		}
 		// Track king positions for endgame centralization logic below.
 		if pieceType == chess.King {
@@ -120,6 +121,9 @@ func EvaluatePos(position *chess.Position, pst [3][3][7][64]int) int {
 			}
 		}
 		score += sc
+		openingScore += pstSign * opening
+		middleScore += pstSign * middle
+		endScore += pstSign * end
 	}
 
 	// Endgame king centralization:
@@ -132,7 +136,8 @@ func EvaluatePos(position *chess.Position, pst [3][3][7][64]int) int {
 	endGameIndex := maxMaterial - totalMaterial
 	lastTotalMaterial = totalMaterial
 	wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
-	score += opening*wopening + middle*wmiddle + end*wend
+	// Phase weights are normalized to 24.
+	score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
 	// Only activate endgame king centralization after ~4900 material is traded.
 	if endGameIndex > 4900 {
 		// Use integer-based distance approximation (Manhattan distance from center ~4.5).
@@ -157,6 +162,7 @@ func EvaluatePos(position *chess.Position, pst [3][3][7][64]int) int {
 	if position.CastleRights().CanCastle(chess.Black, chess.QueenSide) {
 		score -= 40
 	}
+
 	return score
 }
 

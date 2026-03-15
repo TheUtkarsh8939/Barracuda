@@ -158,8 +158,11 @@ func main() {
 			stopSearch <- true
 		} else if command == "debug" {
 			//Custom Instructions LOL
-			fmt.Println(moveList)
-			fmt.Println(game.Position().Board().Draw())
+			fen, _ := chess.FEN("1rbqkbnr/pppppppp/8/8/1n1P4/2N1P3/PPP1NPPP/R1BQKB1R b KQk d3 0 4")
+			testGame := chess.NewGame(fen)
+
+			fmt.Println(EvaluatePos(testGame.Position(), pst))
+			fmt.Println(testGame.Position().Board().Draw())
 		}
 	}
 }
