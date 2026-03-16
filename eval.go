@@ -78,7 +78,8 @@ func phaseWeights(totalMaterial int) (int, int, int) {
 //  3. Castling rights: bonus for retaining the right to castle (king safety indicator).
 //  4. Endgame king centralization: as material drops, the winning side's king is rewarded
 //     for being near the center (active king is critical in endgames).
-func EvaluatePos(position *chess.Position, pst [3][3][7][64]int) int {
+func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
+
 	board := position.Board()
 	score := 0
 	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
@@ -150,16 +151,17 @@ func EvaluatePos(position *chess.Position, pst [3][3][7][64]int) int {
 	}
 
 	// Castling rights bonus: losing the right to castle permanently is a king safety risk.
-	if position.CastleRights().CanCastle(chess.White, chess.KingSide) {
+	castleRights := position.CastleRights()
+	if castleRights.CanCastle(chess.White, chess.KingSide) {
 		score += 50
 	}
-	if position.CastleRights().CanCastle(chess.White, chess.QueenSide) {
+	if castleRights.CanCastle(chess.White, chess.QueenSide) {
 		score += 40
 	}
-	if position.CastleRights().CanCastle(chess.Black, chess.KingSide) {
+	if castleRights.CanCastle(chess.Black, chess.KingSide) {
 		score -= 50
 	}
-	if position.CastleRights().CanCastle(chess.Black, chess.QueenSide) {
+	if castleRights.CanCastle(chess.Black, chess.QueenSide) {
 		score -= 40
 	}
 

@@ -52,14 +52,28 @@ func main() {
 		lastBestMoves = make(map[Move]bool)
 
 		startTime := time.Now()
-		iterativeDeepening(game.Position(), 5, pst, isWhite)
+		iterativeDeepening(game.Position(), 5, &pst, isWhite)
 		elapsed := time.Since(startTime)
 		fmt.Printf("BENCH: nodes=%d time=%v\n", nodesVisited, elapsed)
 		return
 	} else if os.Getenv("MODE") == "2" {
 		pst := initPST()
 		sq := pst[pstMiddle][chess.Black][chess.Pawn][chess.A6]
-		print(sq)
+		fmt.Println(sq)
+		return
+	} else if os.Getenv("MODE") == "3" {
+		fmt.Println("Benchmarking")
+		fen, _ := chess.FEN("1rbqkbnr/pppppppp/8/8/1n1P4/2N1P3/PPP1NPPP/R1BQKB1R b KQk d3 0 4")
+		testGame := chess.NewGame(fen)
+		startTime := time.Now()
+		for i := 0; i < 1000000; i++ {
+			//Test Movegen speed
+			testGame.Position().ValidMoves()
+		}
+		elapsedTime := time.Since(startTime)
+
+		fmt.Printf("BENCH: time=%v\n", elapsedTime)
+		fmt.Printf("BENCH: timesFunctionRan=%d\n", 1000000)
 		return
 	}
 
@@ -148,7 +162,7 @@ func main() {
 		} else if strings.HasPrefix(command, "go") {
 			// Handle the "go" command to start the search for the best move.
 			options := parseGoCmd(command)
-			go iterativeDeepening(game.Position(), options.depth, pst, isWhite) // Start the search process.
+			go iterativeDeepening(game.Position(), options.depth, &pst, isWhite) // Start the search process.
 		} else if command == "quit" {
 			// Handle the "quit" command to exit the program.
 			stopSearch <- true
@@ -161,7 +175,7 @@ func main() {
 			fen, _ := chess.FEN("1rbqkbnr/pppppppp/8/8/1n1P4/2N1P3/PPP1NPPP/R1BQKB1R b KQk d3 0 4")
 			testGame := chess.NewGame(fen)
 
-			fmt.Println(EvaluatePos(testGame.Position(), pst))
+			fmt.Println(EvaluatePos(testGame.Position(), &pst))
 			fmt.Println(testGame.Position().Board().Draw())
 		}
 	}
