@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/corentings/chess"
+	"github.com/corentings/chess/v2"
 )
 
 // main is currently configured as a test harness for benchmarking the search.

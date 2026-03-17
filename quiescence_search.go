@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/corentings/chess"
+	"github.com/corentings/chess/v2"
 )
 
 // deltaMargin is the safety margin for delta pruning in quiescence search.
@@ -22,8 +22,7 @@ const deltaMargin = 200
 //
 // The depth parameter limits the quiescence search to prevent explosion
 // (positions with many forced captures could recurse very deeply otherwise).
-func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst [3][7][64]int) int {
-	nodesVisited++
+func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *[3][3][7][64]int) int {
 
 	// Stand-pat evaluation: the score if we make no more captures ("stand pat").
 	stand_eval := EvaluatePos(pos, pst)
@@ -33,20 +32,20 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		return stand_eval
 	}
 
-	// Stand-pat beta cutoff: if the static eval already exceeds beta,
-	// the opponent wouldn't allow this position — no need to search captures.
-	if stand_eval >= beta {
-		return stand_eval
-	}
-
-	// Stand-pat improves alpha: we can "do nothing" and already beat our previous best.
-	if stand_eval > alpha {
-		alpha = stand_eval
-	}
-
 	vm := pos.ValidMoves()
 
 	if maximizer {
+		// Stand-pat beta cutoff: if the static eval already exceeds beta,
+		// the opponent wouldn't allow this position — no need to search captures.
+		if stand_eval >= beta {
+			return stand_eval
+		}
+
+		// Stand-pat improves alpha: we can "do nothing" and already beat our previous best.
+		if stand_eval > alpha {
+			alpha = stand_eval
+		}
+
 		max_Eval := stand_eval
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
@@ -60,7 +59,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 						}
 					}
 				}
-				newPos := pos.Update(move)
+				newPos := pos.Update(&move)
 				eval := quiescence_search(newPos, alpha, beta, false, depth-1, pst)
 				if eval > alpha {
 					alpha = eval
@@ -76,6 +75,15 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		}
 		return max_Eval
 	} else {
+		// Symmetric stand-pat logic for the minimizing side.
+		if stand_eval <= alpha {
+			return stand_eval
+		}
+
+		if stand_eval < beta {
+			beta = stand_eval
+		}
+
 		minEval := stand_eval
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
@@ -89,7 +97,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 						}
 					}
 				}
-				newPos := pos.Update(move)
+				newPos := pos.Update(&move)
 				eval := quiescence_search(newPos, alpha, beta, true, depth-1, pst)
 				if eval < beta {
 					beta = eval

@@ -3,71 +3,58 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
+	"strings"
 
-	"github.com/corentings/chess"
+	"github.com/corentings/chess/v2"
 )
 
 // Score bounds used as sentinel values instead of float64 math.Inf.
 // Using int throughout the search avoids expensive float64 operations.
 const (
+	// maxScore / minScore act as +∞ and -∞ for alpha and beta initialization.
+	// Values are large enough to exceed any realistic evaluation (max material ≈ 8000 cp)
+	// but small enough to leave headroom for depth-dependent adjustments without overflow.
 	maxScore = 999999
 	minScore = -999999
+
+	// quiescenceDepth limits how many extra plies the quiescence search extends beyond the
+	// main search horizon. Each ply only considers captures and checks (not all legal moves),
+	// so the branching factor is much lower than the main search. 3 provides enough depth
+	// to resolve most tactical sequences (e.g. exchange chains, back-rank checks) while
+	// keeping the node count manageable. Increase this for better tactical accuracy;
+	// decrease it if the engine spends too long in quiescence on forcing positions.
+	quiescenceDepth = 3
+
+	// lmrMinDepth is the minimum remaining depth at which Late Move Reduction is applied.
+	// At depths shallower than this the search is already cheap, so reducing further risks
+	// missing important moves near the leaf. Only nodes with depth >= lmrMinDepth are reduced.
+	lmrMinDepth = 4
+
+	// lmrMoveIndex is the 0-based move index after which LMR kicks in.
+	// The first lmrMoveIndex moves are always searched at full depth regardless of score,
+	// because after good move ordering the best move is almost always in this group.
+	// Later moves (index >= lmrMoveIndex) with a low ordering score are reduced to depth-2
+	// first, then confirmed at full depth only if they beat the current best.
+	lmrMoveIndex = 4
 )
 
 // nodesVisited counts total nodes evaluated during a search — useful for benchmarking speed.
 var nodesVisited int = 0
 
-// ttSize is the number of entries in the array-based transposition table.
-// Must be a power of 2 so we can use bitwise AND for fast index computation.
-const ttSize = 1 << 20 // ~1M entries
-
-// ttMask is used to compute the TT index via hash & ttMask (equivalent to hash % ttSize).
-const ttMask = ttSize - 1
-
-// ttEntry stores a cached position evaluation together with the search depth it was computed at.
-// Entries are only returned when storedDepth >= requestedDepth, ensuring a shallow result
-// is never substituted for a deeper one (which caused incorrect moves in earlier versions).
-// The hashKey field stores the upper bits of the Zobrist hash for collision detection.
-type ttEntry struct {
-	hashKey uint64
-	score   int
-	depth   uint8
-}
-
-// transpositionTable caches position evaluations indexed by Zobrist hash.
-// Array-based with modulo indexing for ~10x faster lookups than Go maps.
-// Persists across iterative deepening iterations — depth validation keeps entries correct.
-var transpositionTable [ttSize]ttEntry
-
 // lastBestMoves is a set of moves found best at previous iterative deepening depths.
 // Stored by square pair (Move struct) for O(1) lookup with no string allocation.
 var lastBestMoves = make(map[Move]bool)
 
+// moveWithScore pairs a move with its evaluation score for efficient sorting.
+type moveWithScore struct {
+	move  *chess.Move
+	score int
+}
+
 // hashToUint64 converts a [16]byte Zobrist hash to uint64 for TT indexing.
 func hashToUint64(h [16]byte) uint64 {
 	return binary.LittleEndian.Uint64(h[:8])
-}
-
-// ttLookup probes the transposition table for a cached entry.
-// Returns the score and true if a valid entry exists at sufficient depth.
-func ttLookup(h uint64, depth uint8) (int, bool) {
-	idx := h & ttMask
-	entry := &transpositionTable[idx]
-	if entry.hashKey == h && entry.depth >= depth {
-		return entry.score, true
-	}
-	return 0, false
-}
-
-// ttStore saves an evaluation in the transposition table.
-func ttStore(h uint64, score int, depth uint8) {
-	idx := h & ttMask
-	transpositionTable[idx] = ttEntry{h, score, depth}
-}
-
-// clearTT resets the transposition table for a new search.
-func clearTT() {
-	transpositionTable = [ttSize]ttEntry{}
 }
 
 // minimax implements the Minimax algorithm with Alpha-Beta Pruning.
@@ -83,53 +70,59 @@ func clearTT() {
 // list are searched at depth-2 instead of depth-1. If they beat the current best,
 // a full re-search at depth-1 is done to confirm. This saves significant time since
 // later moves (after good ordering) are unlikely to be best.
-func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, pst [3][7][64]int) int {
-	nodesVisited++
-
-	// Compute hash once and reuse for both TT lookup and store.
-	posHash := hashToUint64(position.Hash())
+func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, posHash uint64, pst *[3][3][7][64]int) int {
+	alphaOrig := alpha
+	betaOrig := beta
 
 	// Transposition table lookup: only reuse a cached result if it was computed at a depth
 	// at least as deep as what we currently need. A depth-1 entry is useless at depth-6.
-	if score, ok := ttLookup(posHash, depth); ok {
+	if score, newAlpha, newBeta, ok := ttLookup(posHash, depth, alpha, beta); ok {
 		return score
+	} else {
+		alpha = newAlpha
+		beta = newBeta
 	}
 
 	// Terminal node: game is over (checkmate or stalemate). Evaluate and cache.
 	if position.Status() != chess.NoMethod {
-		eval := EvaluatePos(position, pst)
-		ttStore(posHash, eval, 255)
+
+		eval := quiescence_search(position, alpha, beta, maximizer, quiescenceDepth, pst)
+		ttStore(posHash, eval, 255, ttBoundExact)
 		return eval
 	}
 
 	// Leaf node: run quiescence search instead of returning the raw static eval.
 	// This prevents the "horizon effect" — stopping right before a capture gives a misleading score.
 	if depth == 0 {
-		eval := quiescence_search(position, alpha, beta, maximizer, 1, pst)
-		ttStore(posHash, eval, 0)
+		eval := quiescence_search(position, alpha, beta, maximizer, quiescenceDepth, pst)
+		ttStore(posHash, eval, 0, ttBoundExact)
 		return eval
 	}
 
-	// Generate and sort all legal moves, best first.
+	// Generate and score all legal moves for sorting.
 	// Good move ordering is critical: the sooner we find a strong move,
 	// the more branches alpha-beta can prune.
-	// Pre-compute scores once, then sort both arrays together to avoid
-	// redundant EvaluateMove calls during sort comparisons.
-	moves := position.ValidMoves()
-	moveScores := make([]int, len(moves))
-	for i, m := range moves {
-		moveScores[i] = EvaluateMove(m, position, depth)
-	}
-	// Simple selection sort keeps moves and scores in sync without extra allocation.
-	for i := 0; i < len(moves); i++ {
-		best := i
-		for j := i + 1; j < len(moves); j++ {
-			if moveScores[j] > moveScores[best] {
-				best = j
-			}
+	movesRaw := position.ValidMoves()
+	moveList := make([]moveWithScore, len(movesRaw))
+	for i, moveObj := range movesRaw {
+		m := &moveObj
+		moveList[i] = moveWithScore{
+			move:  m,
+			score: EvaluateMove(m, position, depth),
 		}
-		moves[i], moves[best] = moves[best], moves[i]
-		moveScores[i], moveScores[best] = moveScores[best], moveScores[i]
+	}
+
+	// Use built-in quicksort (sort.Slice) to order moves by score (descending).
+	sort.Slice(moveList, func(i, j int) bool {
+		return moveList[i].score > moveList[j].score
+	})
+
+	// Extract moves and scores in sorted order for compatibility with existing code.
+	moves := make([]*chess.Move, len(moveList))
+	moveScores := make([]int, len(moveList))
+	for i := range moveList {
+		moves[i] = moveList[i].move
+		moveScores[i] = moveList[i].score
 	}
 
 	if maximizer {
@@ -137,17 +130,19 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		bestMove := &chess.Move{}
 		for i := 0; i < len(moves); i++ {
 			var score int
+			child := position.Update(moves[i])
+			childHash := fastChildHash(position, child, moves[i], posHash)
 			// Late Move Reduction: moves beyond the first few are likely weaker after good ordering.
 			// Search them at reduced depth first; only do a full search if they look promising.
-			if i > 3 && depth >= 3 && moveScores[i] < 50 {
-				score = minimax(position.Update(moves[i]), depth-2, !maximizer, alpha, beta, pst)
+			if i >= lmrMoveIndex && depth >= lmrMinDepth && moveScores[i] < 50 {
+				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst)
 				if score > alpha {
 					// Promising — confirm with a full-depth search.
-					score = minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
+					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst)
 				}
 			} else {
 				// Normal full-depth search for early (likely better) moves.
-				score = minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
+				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst)
 			}
 			if score > bestScore {
 				bestMove = moves[i]
@@ -158,27 +153,38 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			}
 			// Beta cutoff: minimizer already has a better option elsewhere, prune this branch.
 			if beta <= alpha {
+				if !moves[i].HasTag(chess.Capture) && moves[i].Promo() == chess.NoPieceType {
+					storeKillerMove(depth, Move{moves[i].S1(), moves[i].S2()})
+				}
 				break
 			}
 		}
 		// Record the best move as a killer for future searches at this depth.
-		storeKillerMove(depth, Move{bestMove.S1(), bestMove.S2()})
-		ttStore(posHash, bestScore, depth)
+		pvStore(posHash, depth, bestMove)
+		bound := ttBoundExact
+		if bestScore <= alphaOrig {
+			bound = ttBoundUpper
+		} else if bestScore >= betaOrig {
+			bound = ttBoundLower
+		}
+		ttStore(posHash, bestScore, depth, bound)
 		return bestScore
 	} else {
 		bestScore := maxScore
 		bestMove := &chess.Move{}
 		for i := 0; i < len(moves); i++ {
 			var score int
+			child := position.Update(moves[i])
+			childHash := fastChildHash(position, child, moves[i], posHash)
 			// Late Move Reduction (minimizer side).
-			if i > 3 && depth >= 3 && moveScores[i] < 50 {
-				score = minimax(position.Update(moves[i]), depth-2, !maximizer, alpha, beta, pst)
+			if i >= lmrMoveIndex && depth >= lmrMinDepth && moveScores[i] < 50 {
+				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst)
 				if score < beta {
 					// Promising — confirm with a full-depth search.
-					score = minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
+					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst)
 				}
 			} else {
-				score = minimax(position.Update(moves[i]), depth-1, !maximizer, alpha, beta, pst)
+				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst)
 			}
 			if score < bestScore {
 				bestMove = moves[i]
@@ -189,11 +195,20 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			}
 			// Alpha cutoff: maximizer already has a better option elsewhere, prune this branch.
 			if beta <= alpha {
+				if !moves[i].HasTag(chess.Capture) && moves[i].Promo() == chess.NoPieceType {
+					storeKillerMove(depth, Move{moves[i].S1(), moves[i].S2()})
+				}
 				break
 			}
 		}
-		storeKillerMove(depth, Move{bestMove.S1(), bestMove.S2()})
-		ttStore(posHash, bestScore, depth)
+		pvStore(posHash, depth, bestMove)
+		bound := ttBoundExact
+		if bestScore <= alphaOrig {
+			bound = ttBoundUpper
+		} else if bestScore >= betaOrig {
+			bound = ttBoundLower
+		}
+		ttStore(posHash, bestScore, depth, bound)
 		return bestScore
 	}
 }
@@ -203,7 +218,8 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 // depth-aware entries from shallower searches remain valid and accelerate deeper ones.
 // Castling gets a +200 root bonus to encourage the engine to castle when it's roughly equal.
 // Uses alpha-beta window at root level to prune moves that can't improve on the best found so far.
-func rateAllMoves(position *chess.Position, depth uint8, pst [3][7][64]int, isWhite bool) (*chess.Move, int) {
+func rateAllMoves(position *chess.Position, depth uint8, pst *[3][3][7][64]int, isWhite bool) (*chess.Move, int) {
+	rootHash := fastPosHash(position)
 	bestMove := &chess.Move{}
 	bestScore := minScore
 	alpha := minScore
@@ -215,8 +231,12 @@ func rateAllMoves(position *chess.Position, depth uint8, pst [3][7][64]int, isWh
 
 	moves := position.ValidMoves()
 
-	for _, move := range moves {
-		score := minimax(position.Update(move), depth-1, !isWhite, alpha, beta, pst)
+	for _, moveObj := range moves {
+		//Getting the move pointer
+		move := &moveObj
+		child := position.Update(move)
+		childHash := fastChildHash(position, child, move, rootHash)
+		score := minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst)
 		// Apply a root-level castling bonus — castling is good for king safety.
 		if isCastlingMove(move) {
 			score += 200
@@ -240,6 +260,8 @@ func rateAllMoves(position *chess.Position, depth uint8, pst [3][7][64]int, isWh
 		}
 	}
 
+	pvStore(rootHash, depth, bestMove)
+
 	return bestMove, bestScore
 }
 
@@ -250,23 +272,42 @@ func rateAllMoves(position *chess.Position, depth uint8, pst [3][7][64]int, isWh
 //     boost move ordering at deeper depths, increasing alpha-beta cutoffs.
 //
 // UCI engines emit "info depth X score cp Y" lines so the GUI can track search progress.
-func iterativeDeepening(position *chess.Position, maxDepth uint8, pst [3][7][64]int, isWhite bool) {
+func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *[3][3][7][64]int, isWhite bool) {
+	lastBestMoves = make(map[Move]bool)
+	clearKillerTable()
+	transpositionTable = [ttSize]ttEntry{}
+	clearPV()
 	bestMove := &chess.Move{}
 	bestScore := 0
 	for i := 0; i < int(maxDepth); i++ {
 		select {
 		case <-stopSearch:
 			// Search was interrupted (e.g. UCI "stop" command) — return whatever we have.
+			if len(lastPrincipalVariation) > 0 {
+				fmt.Printf("info pv %s\n", strings.Join(lastPrincipalVariation, " "))
+			}
 			fmt.Println("bestmove", bestMove)
 			return
 		default:
-			bestMove, bestScore = rateAllMoves(position, uint8(i+1), pst, isWhite)
+			depth := uint8(i + 1)
+			bestMove, bestScore = rateAllMoves(position, depth, pst, isWhite)
+			lastPrincipalVariation = buildPVLine(position, depth)
 			lastBestMoves[Move{bestMove.S1(), bestMove.S2()}] = true
-			fmt.Printf("info depth %d score cp %d \n", i+1, bestScore)
+			if len(lastPrincipalVariation) > 0 {
+				fmt.Printf("info depth %d score cp %d pv %s\n", i+1, bestScore, strings.Join(lastPrincipalVariation, " "))
+			} else {
+				fmt.Printf("info depth %d score cp %d \n", i+1, bestScore)
+			}
 		}
 	}
+	if len(lastPrincipalVariation) > 0 {
+		fmt.Printf("info pv %s\n", strings.Join(lastPrincipalVariation, " "))
+	}
 	fmt.Println("bestmove", bestMove)
+	fmt.Println("Nodes Searched: " + fmt.Sprintf("%d", nodesVisited))
+	nodesVisited = 0
 	// Clean up state for the next search.
 	lastBestMoves = make(map[Move]bool)
 	clearKillerTable()
+	clearPV()
 }

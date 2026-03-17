@@ -1,5 +1,7 @@
 module main
 
-go 1.24.1
+go 1.25.0
 
-require github.com/corentings/chess v0.0.0-20241113092200-3f44c4e3e959
+require github.com/corentings/chess/v2 v2.3.6
+
+require golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
