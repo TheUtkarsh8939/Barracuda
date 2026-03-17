@@ -2,7 +2,7 @@ package main
 
 // ttSize is the number of entries in the array-based transposition table.
 // Must be a power of 2 so we can use bitwise AND for fast index computation.
-const ttSize = 1 << 20 // ~1M entries
+const ttSize = 1 << 20 // ~4M entries
 
 // ttMask is used to compute the TT index via hash & ttMask (equivalent to hash % ttSize).
 const ttMask = ttSize - 1

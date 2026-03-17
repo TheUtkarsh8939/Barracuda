@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/corentings/chess"
+	"github.com/corentings/chess/v2"
 )
 
 // Move is a lightweight representation of a chess move (from-square, to-square).

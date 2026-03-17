@@ -1,6 +1,6 @@
 package main
 
-import "github.com/corentings/chess"
+import "github.com/corentings/chess/v2"
 
 const (
 	pstStart = iota

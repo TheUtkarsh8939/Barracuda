@@ -5,7 +5,7 @@
 
 # Barracuda
 
-Barracuda is a Go chess engine built on top of `github.com/corentings/chess`.
+Barracuda is a Go chess engine built on top of `github.com/corentings/chess/v2`.
 It uses minimax with alpha-beta pruning, iterative deepening, quiescence search,
 piece-square tables, killer moves, and a depth-aware transposition table.
 

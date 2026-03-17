@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/corentings/chess"
+	"github.com/corentings/chess/v2"
 )
 
 // Score bounds used as sentinel values instead of float64 math.Inf.
@@ -104,7 +104,8 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 	// the more branches alpha-beta can prune.
 	movesRaw := position.ValidMoves()
 	moveList := make([]moveWithScore, len(movesRaw))
-	for i, m := range movesRaw {
+	for i, moveObj := range movesRaw {
+		m := &moveObj
 		moveList[i] = moveWithScore{
 			move:  m,
 			score: EvaluateMove(m, position, depth),
@@ -230,7 +231,9 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *[3][3][7][64]int, 
 
 	moves := position.ValidMoves()
 
-	for _, move := range moves {
+	for _, moveObj := range moves {
+		//Getting the move pointer
+		move := &moveObj
 		child := position.Update(move)
 		childHash := fastChildHash(position, child, move, rootHash)
 		score := minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst)

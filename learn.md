@@ -1,6 +1,6 @@
 # Barracuda — Implementation Deep Dive
 
-> A Go chess engine written from scratch. Uses `github.com/corentings/chess` for board
+> A Go chess engine written from scratch. Uses `github.com/corentings/chess/v2` for board
 > representation and legal move generation. Implements a full adversarial search stack
 > on top of that library.
 
@@ -58,7 +58,7 @@ ucihelper.go          — parseGoCmd (UCI "go" command tokenizer)
 go.mod / go.sum       — module file (single dependency: corentings/chess)
 ```
 
-**Dependency:** `github.com/corentings/chess` handles the board, legal move generation,
+**Dependency:** `github.com/corentings/chess/v2` handles the board, legal move generation,
 Zobrist hashing, FEN parsing, and UCI notation encoding/decoding. Barracuda sits on top
 of that and provides all the AI logic.
 
@@ -854,7 +854,7 @@ PGO lets the Go compiler inline and optimize hot paths based on a real CPU profi
 package main
 import (
     "testing"
-    "github.com/corentings/chess"
+    "github.com/corentings/chess/v2"
 )
 func BenchmarkSearch(b *testing.B) {
     fen, _ := chess.FEN("r1b2rk1/pp1pqppp/2p5/3nP3/1b1Q1P2/2N5/PPPBB1PP/R3K2R b KQ - 2 12")

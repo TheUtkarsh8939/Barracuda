@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/corentings/chess"
+	"github.com/corentings/chess/v2"
 )
 
 // deltaMargin is the safety margin for delta pruning in quiescence search.
@@ -59,7 +59,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 						}
 					}
 				}
-				newPos := pos.Update(move)
+				newPos := pos.Update(&move)
 				eval := quiescence_search(newPos, alpha, beta, false, depth-1, pst)
 				if eval > alpha {
 					alpha = eval
@@ -97,7 +97,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 						}
 					}
 				}
-				newPos := pos.Update(move)
+				newPos := pos.Update(&move)
 				eval := quiescence_search(newPos, alpha, beta, true, depth-1, pst)
 				if eval < beta {
 					beta = eval

@@ -7,29 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/corentings/chess"
+	"github.com/corentings/chess/v2"
 )
-
-// main is currently configured as a test harness for benchmarking the search.
-// The full UCI loop (for connecting to a chess GUI) is implemented but commented out below.
-//
-// To switch to UCI mode: comment out this test main and uncomment the UCI main below.
-// func main() {
-// 	// Load a mid-game test position via FEN notation.
-// 	fen, _ := chess.FEN("r1b2rk1/pp1pqppp/2p5/3nP3/1b1Q1P2/2N5/PPPBB1PP/R3K2R b KQ - 2 12")
-// 	game := chess.NewGame(fen)
-// 	pst := initPST()
-// 	isWhite := false
-
-// 	startTime := time.Now()
-
-// 	// Run iterative deepening to depth 5 and print the best move + search info.
-// 	iterativeDeepening(game.Position(), 8, pst, isWhite)
-// 	fmt.Println(nodesVisited)
-
-// 	elpased := time.Since(startTime)
-// 	fmt.Println(elpased)
-// }
 
 // main is the entry point of the program. It initializes the UCI protocol loop for communication
 // with chess GUIs and handles commands such as "uci", "isready", "position", and "go".
@@ -44,7 +23,6 @@ func main() {
 		game := chess.NewGame()
 		pst := initPST()
 		isWhite := true
-		chess.UseNotation(chess.UCINotation{})
 
 		nodesVisited = 0
 		clearTT()
@@ -52,7 +30,7 @@ func main() {
 		lastBestMoves = make(map[Move]bool)
 
 		startTime := time.Now()
-		iterativeDeepening(game.Position(), 5, &pst, isWhite)
+		iterativeDeepening(game.Position(), 7, &pst, isWhite)
 		elapsed := time.Since(startTime)
 		fmt.Printf("BENCH: nodes=%d time=%v\n", nodesVisited, elapsed)
 		return
@@ -65,10 +43,12 @@ func main() {
 		fmt.Println("Benchmarking")
 		fen, _ := chess.FEN("1rbqkbnr/pppppppp/8/8/1n1P4/2N1P3/PPP1NPPP/R1BQKB1R b KQk d3 0 4")
 		testGame := chess.NewGame(fen)
+		pst := initPST()
+		pstptr := &pst
 		startTime := time.Now()
 		for i := 0; i < 1000000; i++ {
-			//Test Movegen speed
-			testGame.Position().ValidMoves()
+			//Test Eval speed by evaluating the same position 1 million times.
+			EvaluatePos(testGame.Position(), pstptr)
 		}
 		elapsedTime := time.Since(startTime)
 
@@ -86,9 +66,6 @@ func main() {
 	// Initialize a new chess game and the piece-square table (PST) for evaluation.
 	game := chess.NewGame()
 	pst := initPST()
-
-	// Set the notation system to UCI for move encoding and decoding.
-	chess.UseNotation(chess.UCINotation{})
 
 	// Print engine identification information.
 	fmt.Println("id name Barracuda")
@@ -125,7 +102,7 @@ func main() {
 				game = chess.NewGame()
 				for i := 3; i < len(tokens); i++ {
 					move, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), tokens[i])
-					game.Move(move)
+					game.Move(move, &chess.PushMoveOptions{}) // Skip move validation for speed; assumes input is correct.
 					if err != nil {
 						fmt.Println(err)
 

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/corentings/chess"
+	"github.com/corentings/chess/v2"
 )
 
 // Last Calculated Total material
@@ -86,6 +86,7 @@ func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
 	// Start at -200000 to cancel out both kings' values from the material total.
 	// We only want non-king material to drive the endgame detection index.
 	totalMaterial := -200000
+	//Get Pawn Bitboard
 
 	openingScore := 0
 	middleScore := 0
