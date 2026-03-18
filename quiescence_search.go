@@ -23,7 +23,8 @@ const deltaMargin = 200
 // The depth parameter limits the quiescence search to prevent explosion
 // (positions with many forced captures could recurse very deeply otherwise).
 func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *[3][3][7][64]int) int {
-
+	quiescenceNodesVisited++
+	nodesVisited++
 	// Stand-pat evaluation: the score if we make no more captures ("stand pat").
 	stand_eval := EvaluatePos(pos, pst)
 

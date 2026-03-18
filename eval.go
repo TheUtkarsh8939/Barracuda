@@ -1,11 +1,25 @@
 package main
 
 import (
+	"math/bits"
+
 	"github.com/corentings/chess/v2"
 )
 
 // Last Calculated Total material
 var lastTotalMaterial int = 0
+
+// Binary Masks to get files from bitboards
+var fileMasks = [8]uint64{
+	0b000000010000000100000001000000010000000100000001000000010,
+	0b000000100000001000000010000000100000001000000010000000100,
+	0b000001000000010000000100000001000000010000000100000001000,
+	0b000010000000100000001000000010000000100000001000000010000,
+	0b000100000001000000010000000100000001000000010000000100000,
+	0b001000000010000000100000001000000010000000100000001000000,
+	0b010000000100000001000000010000000100000001000000010000000,
+	0b100000001000000010000000100000001000000010000000100000001,
+}
 
 // pieceValues stores centipawn values indexed by PieceType (int8).
 // Using an array instead of a map eliminates map hashing overhead in the hot path.
@@ -36,6 +50,19 @@ func clampInt(x int, lo int, hi int) int {
 		return hi
 	}
 	return x
+}
+
+// Evaluate Double Pawns
+// Score can be b/w -8 to 0, where 0 means no double pawns and -8 means all 8 files have double pawns
+func doublePawns(pawnBitboard uint64) int {
+	score := 0
+	for i := range 8 {
+		masked := pawnBitboard & fileMasks[i]
+		if bits.OnesCount64(masked) > 1 {
+			score--
+		}
+	}
+	return score
 }
 
 // phaseWeights returns start/mid/end weights normalized to 24.
@@ -79,7 +106,14 @@ func phaseWeights(totalMaterial int) (int, int, int) {
 //  4. Endgame king centralization: as material drops, the winning side's king is rewarded
 //     for being near the center (active king is critical in endgames).
 func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
-
+	if position.Status() == chess.Checkmate {
+		if position.Turn() == chess.White {
+			return -99999 // White is checkmated
+		} else {
+			return 99999 // Black is checkmated
+		}
+	}
+	evaluateFunctionCalls++
 	board := position.Board()
 	score := 0
 	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
@@ -151,20 +185,20 @@ func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
 		score += (-whiteDist + blackDist) * smartEndgameFactor / 4
 	}
 
-	// Castling rights bonus: losing the right to castle permanently is a king safety risk.
-	castleRights := position.CastleRights()
-	if castleRights.CanCastle(chess.White, chess.KingSide) {
-		score += 50
-	}
-	if castleRights.CanCastle(chess.White, chess.QueenSide) {
-		score += 40
-	}
-	if castleRights.CanCastle(chess.Black, chess.KingSide) {
-		score -= 50
-	}
-	if castleRights.CanCastle(chess.Black, chess.QueenSide) {
-		score -= 40
-	}
+	// // Castling rights bonus: losing the right to castle permanently is a king safety risk.
+	// castleRights := position.CastleRights()
+	// if castleRights.CanCastle(chess.White, chess.KingSide) {
+	// 	score += 50
+	// }
+	// if castleRights.CanCastle(chess.White, chess.QueenSide) {
+	// 	score += 40
+	// }
+	// if castleRights.CanCastle(chess.Black, chess.KingSide) {
+	// 	score -= 50
+	// }
+	// if castleRights.CanCastle(chess.Black, chess.QueenSide) {
+	// 	score -= 40
+	// }
 
 	return score
 }

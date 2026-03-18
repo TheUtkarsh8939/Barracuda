@@ -1,9 +1,5 @@
-# NOTE
->The project is now discontinued due to an unidentified bug causing move repetions and weird moves if anybody ever finds it please tell me, the search functions are perfectly usable the issue is in either Evaluation or UCI Implemantion
 
->I am currently rewrting the engine is C for better performance, this project will be archived
-
-# Barracuda
+# Barracuda 
 
 Barracuda is a Go chess engine built on top of `github.com/corentings/chess/v2`.
 It uses minimax with alpha-beta pruning, iterative deepening, quiescence search,
@@ -45,6 +41,10 @@ hardcoded test position.
 - `handler.go` — killer-move bookkeeping
 - `ucihelper.go` — parsing for UCI `go` options
 - `misc.go` — shared structs and helper utilities
+- `transposition_table.go` - handles transpositon table logic
+- `hashing.go` - Handles the new faster approach for position hashing for transposition table
+- `profiling*.go` - CPU and Time profiling for performance analysis
+- `pv_store.go` - Handles Principal Variation Logic
 
 ## Strengths
 

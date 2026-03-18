@@ -20,8 +20,9 @@
 5. [Evaluation — `eval.go`](#5-evaluation--evalgo)
    - 5.1 Material
    - 5.2 Piece-Square Tables
-   - 5.3 Castling Rights
-   - 5.4 Endgame King Centralization
+    - 5.3 Phase-Blended Evaluation
+    - 5.4 Endgame King Centralization
+    - 5.5 Pawn Structure Helper (`doublePawns`)
 6. [Move Ordering — `eval.go` (`EvaluateMove`)](#6-move-ordering--evalgo-evaluatemove)
 7. [Piece-Square Tables — `pst.go`](#7-piece-square-tables--pstgo)
 8. [Killer Move Heuristic — `handler.go`](#8-killer-move-heuristic--handlergo)
@@ -36,6 +37,8 @@
 12. [UCI Protocol — `main.go` & `ucihelper.go`](#12-uci-protocol--maingo--ucihelpergo)
 13. [Data Flow: One Full Search Cycle](#13-data-flow-one-full-search-cycle)
 14. [Performance Notes & Optimization History](#14-performance-notes--optimization-history)
+    - 14.1 Runtime Modes (`MODE=1..4`)
+    - 14.2 Profiling Harness (`profiling.go`)
 15. [Known Gaps & What to Implement Next](#15-known-gaps--what-to-implement-next)
 16. [Build Instructions](#16-build-instructions)
 
@@ -55,7 +58,10 @@ pv_store.go           — principal variation table: pvLookup, pvStore, buildPVL
 transposition_table.go — transposition table: ttLookup, ttStore, ttEntry with bounds
 misc.go               — Move struct, SearchOptions, isCastlingMove
 ucihelper.go          — parseGoCmd (UCI "go" command tokenizer)
-go.mod / go.sum       — module file (single dependency: corentings/chess)
+profiling.go          — microbenchmark harness (hot-function timing + CPU usage)
+profiling_cpu_*.go    — per-OS process CPU time readers (Windows/!Windows)
+autoSyntaxGenerator.py — helper script used to generate file bitboard masks
+go.mod / go.sum       — module definitions (direct dependency: corentings/chess)
 ```
 
 **Dependency:** `github.com/corentings/chess/v2` handles the board, legal move generation,
@@ -257,7 +263,10 @@ captures and checks** (not quiet moves). This continues until the position is "q
 - If `stand_eval >= beta` → prune immediately (opponent wouldn't allow this)
 - If `stand_eval > alpha` → update alpha (we can "do nothing" and already beat our floor)
 
-The `depth` parameter limits quiescence to 1 extra ply currently to prevent explosion
+`quiescenceDepth` is currently set to **3** in `search.go` to prevent tactical blindness
+while keeping capture/check trees bounded.
+
+The `depth` parameter limits quiescence to a fixed number of extra plies to prevent explosion
 in positions with long capture chains.
 
 ### Delta Pruning
@@ -297,7 +306,7 @@ func EvaluatePos(position, pst) int
 ```
 
 Returns a score in **centipawns** from White's perspective (positive = good for White,
-negative = good for Black). Four components:
+negative = good for Black). Active components:
 
 ### 5.1 Material
 
@@ -347,16 +356,18 @@ Direct iteration avoids the map allocation entirely. The chess library's `Piece(
 checks 12 bitboards internally, so 64 × 12 = 768 bitboard checks — but this is cheaper
 than the map allocation and hashing overhead that `SquareMap` required.
 
-### 5.3 Castling Rights
+### 5.3 Phase-Blended Evaluation
 
-```
-Still has kingside castle right  → +50
-Still has queenside castle right → +40
-(symmetric penalty for Black)
+Barracuda keeps **three PST banks** (opening, middlegame, endgame) and blends them
+using phase weights derived from remaining material:
+
+```go
+wopening, wmiddle, wend := phaseWeights(totalMaterial)
+score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
 ```
 
-Losing the right to castle permanently is a king safety risk. These bonuses degrade
-naturally as the engine trades away castling rights.
+This gives smoother transitions than a single PST and prevents abrupt evaluation jumps
+when material crosses a hard threshold.
 
 ### 5.4 Endgame King Centralization
 
@@ -385,6 +396,18 @@ throughout. Now uses a pure integer approach: coordinates are doubled (center at
 instead of 4.5,4.5) and `absInt()` replaces `math.Abs()`, eliminating all float64
 operations from the evaluation hot path.
 
+### 5.5 Pawn Structure Helper (`doublePawns`)
+
+`eval.go` includes a helper:
+
+```go
+func doublePawns(pawnBitboard uint64) int
+```
+
+It scans file masks and returns a penalty based on files containing 2+ pawns.
+This helper is currently benchmark/debug-oriented and not yet integrated into
+`EvaluatePos` scoring.
+
 ---
 
 ## 6. Move Ordering — `eval.go` (`EvaluateMove`)
@@ -395,7 +418,7 @@ func EvaluateMove(move *chess.Move, position *chess.Position, depth uint8) int
 
 Move ordering is critical for alpha-beta performance. Better-ordered moves cause more
 cutoffs. `EvaluateMove` assigns a priority score to each move before sorting. It is
-called **once per move** before the sort (scores are cached in `moveScores[]`), not
+called **once per move** before the sort (cached in `moveWithScore`), not
 inside the comparator. Moves are then sorted descending by score using `sort.Slice`.
 
 | Heuristic | Bonus | Notes |
@@ -409,9 +432,8 @@ inside the comparator. Moves are then sorted descending by score using `sort.Sli
 | Castling | +150 | King safety; also gets +200 root bonus in `rateAllMoves` |
 | Moves that give check | +100 | Forcing; usually narrows opponent options |
 
-*Sorting:* `sort.Slice` (Go's built-in introsort, O(n log n)) replaced a previous O(n²)
-selection sort. A `moveWithScore` struct carries both move and score through the sort,
-then the two parallel slices are reconstructed in sorted order afterward.
+*Sorting:* `sort.Slice` (Go's built-in introsort, O(n log n)) orders a `moveWithScore`
+slice by descending score.
 
 **MVV-LVA** (Most Valuable Victim – Least Valuable Attacker): prefers captures that trade
 up (e.g. pawn takes queen = 900−100 = 800). If the net is negative (losing trade), the
@@ -437,8 +459,12 @@ func mirrorBoard(pst [64]int) [64]int {
 
 This ensures both sides get symmetric positional incentives.
 
-`initPST()` returns a `[3][7][64]int` array indexed by `[Color][PieceType][Square]`.
-Color 1 = White, Color 2 = Black; PieceType 1 = King, ..., 6 = Pawn.
+`initPST()` returns a `[3][3][7][64]int` array indexed by
+`[Phase][Color][PieceType][Square]`.
+
+- Phase: start, middlegame, endgame
+- Color: 1 = White, 2 = Black
+- PieceType: 1 = King, ..., 6 = Pawn
 
 **Previous version:** Returned `map[chess.Color]map[chess.PieceType][64]int` — a nested
 map structure. Each PST lookup required two map hash operations. The array-based version
@@ -452,7 +478,7 @@ that was visible in CPU profiles (~17% of time spent in `aeshashbody` for map ke
 | Bishop | Long diagonal control, avoid edges and corners |
 | Rook | 7th rank bonus (+5/+10), open file reward |
 | Queen | Slight center preference, avoid very early development |
-| King | All zeros (safety handled by castling rights bonus + endgame logic) |
+| King | Strongly phase-dependent tables (shelter in opening, activity in endgame) |
 
 ---
 
@@ -647,15 +673,17 @@ type SearchOptions struct {
     winc      int    // from "winc"
 }
 ```
-Note: time fields are parsed but **not yet used** for time management.
+Note: `wtime`, `btime`, `winc`, `binc` are parsed; `movetime` exists in the struct but
+is not currently parsed in `parseGoCmd`.
 
 **`isCastlingMove`:** Detects castling by checking king origin+destination squares
-(E1→G1/C1 for White, E8→G8/C8 for Black). Used both in move ordering (+40) and in the
+(E1→G1/C1 for White, E8→G8/C8 for Black). Used both in move ordering and in the
 root search (+200 bonus).
 
+Current values in code are +150 in `EvaluateMove` and +200 root bonus in `rateAllMoves`.
+
 **`InsertionSort`:** An O(n²) alternative to `sort.Slice` written for benchmarking.
-Currently unused in production (selection sort is used in `search.go` instead because
-it keeps `moves[]` and `moveScores[]` in sync without extra data structures).
+Currently unused in production; `search.go` uses `sort.Slice` over `moveWithScore`.
 
 ---
 
@@ -691,6 +719,9 @@ printed and the goroutine returns.
 
 Tokenizes the `go` command string by spaces and scans for known option keys, reading
 the next token as a value. Unknown tokens are silently skipped (spec-compliant).
+
+Supported keys today: `depth`, `infinite`, `wtime`, `btime`, `winc`, `binc`.
+For `go infinite`, parser sets `depth=255`.
 
 ---
 
@@ -735,7 +766,7 @@ go iterativeDeepening(pos, 6, pst, isWhite)
 | Optimization | Impact | Where |
 |---|---|---|
 | Remove `position.Update()` from `EvaluateMove` (was checking for checkmate in sort) | **~5x speedup** | `eval.go` |
-| Pre-compute `moveScores[]` once before sort (was calling `EvaluateMove` O(n log n) times) | **~2x speedup** | `search.go` |
+| Pre-compute move scores once before sort (was calling `EvaluateMove` repeatedly in comparator paths) | **~2x speedup** | `search.go` |
 | Use global `pieceValues` map (was allocating a new map on every `EvaluateMove` call) | **~1.5x speedup** | `eval.go` |
 | Depth-aware TT with `ttEntry{score, depth}` (was blindly reusing shallow results) | Correctness fix + moderate speed gain | `search.go` |
 | TT persists across ID iterations (was wiped with `make(map...)` each depth) | Correctness + speed | `search.go` |
@@ -752,7 +783,7 @@ Identified via CPU profiling (`go tool pprof`). Depth 5 from startpos dropped fr
 | **int scores throughout search** — replaced all `float64` alpha/beta/bestScore with `int`. Sentinel values `maxScore=999999` / `minScore=-999999` replace `math.Inf`. | **~11x faster comparisons** (eliminates `math.Max`/`math.Min` float ops) | `search.go` |
 | **Alpha-beta at root** — `rateAllMoves` now maintains alpha/beta bounds across root moves instead of using full `(-∞, +∞)` window for every move. | **~50% node reduction** (59k → 29k nodes) | `search.go` |
 | **Direct square iteration** — `EvaluatePos` iterates 64 squares via `Board().Piece(sq)` instead of calling `Board().SquareMap()` which allocated a `map[Square]Piece` per call. | **Eliminated 43% of CPU time** (profile showed `SquareMap` dominant) | `eval.go` |
-| **Array-based PST** — replaced `map[Color]map[PieceType][64]int` with `[3][7][64]int`. | **Eliminated nested map hashing** in eval hot path | `pst.go`, `eval.go` |
+| **Array-based PST** — replaced `map[Color]map[PieceType][64]int` with `[3][3][7][64]int` (phase+color+piece+square). | **Eliminated nested map hashing** in eval hot path | `pst.go`, `eval.go` |
 | **Array-based pieceValues** — replaced `map[PieceType]int` with `[7]int`. | **Eliminated map lookup** per piece per eval call | `eval.go` |
 | **Array-based killer table** — replaced `map[uint8][]Move` with `[64]killerEntry`. | **Eliminated map hashing** in move ordering | `handler.go`, `eval.go` |
 | **Integer endgame math** — replaced `math.Abs(4.5-float64(x))` with `absInt(9-x*2)`. | **Eliminated float64 ops** from evaluation | `eval.go` |
@@ -794,8 +825,47 @@ Identified via CPU profiling (`go tool pprof`). Depth 5 from startpos dropped fr
 **How to run the benchmark:**
 ```bash
 go build -o barracuda .
-BENCH=1 ./barracuda
+MODE=4 ./barracuda
 ```
+
+### 14.1 Runtime Modes (`MODE=1..4`)
+
+`main.go` currently multiplexes benchmark/debug entry paths behind the `MODE` env var:
+
+- `MODE=1`: depth-7 benchmark search from start position; prints node/eval counters.
+- `MODE=2`: debug path for `doublePawns` on a fixed FEN.
+- `MODE=3`: lightweight repeated eval timing path.
+- `MODE=4`: comprehensive hot-function profiling (`Benchmark()` in `profiling.go`).
+- unset `MODE`: normal UCI loop.
+
+PowerShell examples:
+
+```powershell
+$env:MODE = "1"; go run .
+$env:MODE = "4"; go run .
+```
+
+### 14.2 Profiling Harness (`profiling.go`)
+
+`Benchmark()` runs each hot function for 1,000,000 calls and prints per-call nanoseconds
+plus an estimated CPU usage percentage.
+
+Functions covered include:
+
+- `ValidMoves`
+- `Update`
+- `EvaluatePos`
+- `EvaluateMove`
+- `fastPosHash`
+- `fastChildHash`
+- `ttLookup`
+- `ttStore`
+- `quiescence_search_depth1`
+
+OS-specific CPU readers:
+
+- Windows: `profiling_cpu_windows.go` uses `GetProcessTimes`.
+- Non-Windows: `profiling_cpu_other.go` uses `runtime/metrics`.
 
 ---
 
@@ -815,7 +885,7 @@ If the null-move result still exceeds beta, the current position is so overwhelm
 a real move also will — prune immediately. Should be disabled in zugzwang-prone endgames.
 
 **Time management**
-`SearchOptions` already parses `wtime`, `btime`, `winc`, `binc` but they are never used.
+`SearchOptions` parses `wtime`, `btime`, `winc`, `binc` but they are never used.
 A proper time manager should allocate roughly `remaining_time / (moves_to_go + buffer)`
 per move and interrupt the search via `stopSearch` when the budget expires.
 
@@ -830,6 +900,10 @@ with a wider window. This dramatically reduces the root search cost on most iter
 Track which quiet moves caused beta cutoffs across the whole search (not just at the same
 depth like killers). Score moves by `history[from][to]` and use it to bias move ordering.
 Complements killers and iterative deepening history.
+
+**Repetition / 50-move draw handling**
+Add explicit draw-aware logic (including optional contempt tuning) so repetitions and
+drawish technical endgames are handled consistently.
 
 **Syzygy / EGTB endgame tables**
 For positions with ≤6 pieces, tablebases give exact results instantly. Even partial
