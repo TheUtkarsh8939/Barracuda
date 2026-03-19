@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/binary"
+
 	"github.com/corentings/chess/v2"
 )
 
@@ -61,4 +63,24 @@ func isCastlingMove(move *chess.Move) bool {
 		}
 	}
 	return false
+}
+
+// ExtractPawnBitboards extracts the white and black pawn bitboards from the binary
+// representation returned by position().MarshalBinary(). The binary representation
+// contains 12 bitboards (uint64 each), ordered as:
+// WhiteKing(0), WhiteQueen(1), WhiteRook(2), WhiteBishop(3), WhiteKnight(4),
+// WhitePawn(5), BlackKing(6), BlackQueen(7), BlackRook(8), BlackBishop(9),
+// BlackKnight(10), BlackPawn(11).
+// Returns (whitePawnBB, blackPawnBB)
+func ExtractPawnBitboards(bbRaw []byte) (uint64, uint64) {
+	// Each bitboard is uint64 = 8 bytes
+	// WhitePawn is at index 5, BlackPawn is at index 11
+	whitePawnStart := 5 * 8
+	blackPawnStart := 11 * 8
+
+	// Convert bytes to uint64 using little-endian byte order
+	whitePawn := binary.LittleEndian.Uint64(bbRaw[whitePawnStart : whitePawnStart+8])
+	blackPawn := binary.LittleEndian.Uint64(bbRaw[blackPawnStart : blackPawnStart+8])
+
+	return whitePawn, blackPawn
 }

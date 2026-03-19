@@ -39,10 +39,11 @@ func main() {
 		fmt.Printf("BENCH: nodes=%d, leafNodes=%d, quiescenceNodes=%d, evaluationDone=%d, positionUpdateCalls=%d, time=%v\n", nodesVisited, leafNodesVisited, quiescenceNodesVisited, evaluateFunctionCalls, positionUpdateCalls, elapsed)
 		return
 	} else if os.Getenv("MODE") == "2" {
-		fen, _ := chess.FEN("1rbqkbnr/pppppppp/8/8/1n1P4/2N1P3/PPP1NPPP/R1BQKB1R b KQk d3 0 4")
+		fen, _ := chess.FEN("rnbqkbnr/pppp1pp1/7p/4P3/8/4P3/PPP2PPP/RNBQKBNR b KQkq - 0 3")
 		testGame := chess.NewGame(fen)
-		bb, _ := testGame.Position().MarshalBinary()
-		doublePawnScore := doublePawns(uint64(bb[5]))
+		bbRaw, _ := testGame.Position().MarshalBinary()
+		bb, _ := ExtractPawnBitboards(bbRaw)
+		doublePawnScore := pawnStructure(bb)
 		fmt.Println(doublePawnScore)
 		return
 	} else if os.Getenv("MODE") == "3" {

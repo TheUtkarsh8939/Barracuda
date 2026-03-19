@@ -91,7 +91,11 @@ func Benchmark() {
 	}
 	move := &moves[0]
 	child := position.Update(move)
-
+	runBenchmark("PawnStructure", benchmarkCalls, func(_ int) {
+		bb, _ := position.MarshalBinary()
+		wbb, _ := ExtractPawnBitboards(bb)
+		benchIntSink += pawnStructure(wbb)
+	})
 	runBenchmark("ValidMoves", benchmarkCalls, func(_ int) {
 		benchIntSink += len(position.ValidMoves())
 	})

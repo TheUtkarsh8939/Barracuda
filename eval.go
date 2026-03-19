@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/bits"
 
 	"github.com/corentings/chess/v2"
@@ -53,15 +54,37 @@ func clampInt(x int, lo int, hi int) int {
 }
 
 // Evaluate Double Pawns
-// Score can be b/w -8 to 0, where 0 means no double pawns and -8 means all 8 files have double pawns
-func doublePawns(pawnBitboard uint64) int {
+// Score is negative when there are doubled pawns or isolated files.
+// More negative = worse structure.
+func pawnStructure(pawnBitboard uint64) int {
 	score := 0
-	for i := range 8 {
+	var pawnsPerFile [8]int
+	for i := range pawnsPerFile {
 		masked := pawnBitboard & fileMasks[i]
-		if bits.OnesCount64(masked) > 1 {
+
+		pawnsPerFile[i] = bits.OnesCount64(masked)
+	}
+
+	for i, count := range pawnsPerFile {
+		if count > 1 {
+			score -= (count - 1) * 2 // Each extra pawn on the same file costs -2.
+		}
+		// Penalty for isolated/half-open files (adjacent file has no pawn).
+		if i > 0 && pawnsPerFile[i-1] == 0 {
+			score--
+		}
+		if i < 7 && pawnsPerFile[i+1] == 0 {
 			score--
 		}
 	}
+
+	// Bonus for pawn chains: a pawn gets +2 if defended by a pawn on
+	// bottom-left or bottom-right (white attack geometry in A1=LSB mapping).
+	const fileA uint64 = 0x0101010101010101
+	const fileH uint64 = 0x8080808080808080
+	defendedPawns := pawnBitboard & (((pawnBitboard << 7) &^ fileH) | ((pawnBitboard << 9) &^ fileA))
+	score += bits.OnesCount64(defendedPawns) * 2
+
 	return score
 }
 
@@ -106,6 +129,15 @@ func phaseWeights(totalMaterial int) (int, int, int) {
 //  4. Endgame king centralization: as material drops, the winning side's king is rewarded
 //     for being near the center (active king is critical in endgames).
 func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
+	//TODO: Replace the square based evaluation with bitboard-based evaluation for better performance.
+
+	bbRaw, err := position.MarshalBinary()
+	if err != nil {
+		fmt.Errorf("Error in bitboard retrieval %w\n", err)
+	}
+	// Extract pawn bitboards for pawn structure evaluation.
+	wbb, bbb := ExtractPawnBitboards(bbRaw)
+	score := pawnStructure(wbb)*20 - pawnStructure(bbb)*20 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
 	if position.Status() == chess.Checkmate {
 		if position.Turn() == chess.White {
 			return -99999 // White is checkmated
@@ -115,7 +147,6 @@ func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
 	}
 	evaluateFunctionCalls++
 	board := position.Board()
-	score := 0
 	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
 	// Start at -200000 to cancel out both kings' values from the material total.
 	// We only want non-king material to drive the endgame detection index.
