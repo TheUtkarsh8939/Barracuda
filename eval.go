@@ -137,7 +137,7 @@ func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
 	}
 	// Extract pawn bitboards for pawn structure evaluation.
 	wbb, bbb := ExtractPawnBitboards(bbRaw)
-	score := pawnStructure(wbb)*20 - pawnStructure(bbb)*20 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
+	score := pawnStructure(wbb)*20 - pawnStructure(bbb)*10 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
 	if position.Status() == chess.Checkmate {
 		if position.Turn() == chess.White {
 			return -99999 // White is checkmated
