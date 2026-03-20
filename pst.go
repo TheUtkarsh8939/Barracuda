@@ -2,12 +2,6 @@ package main
 
 import "github.com/corentings/chess/v2"
 
-const (
-	pstStart = iota
-	pstMiddle
-	pstEnd
-)
-
 type PST [3][3][7][64]int
 
 // mirrorBoard flips a piece-square table vertically so that Black's PST
@@ -25,10 +19,7 @@ func mirrorBoard(pst [64]int) [64]int {
 	return mirrored
 }
 
-// initPST initializes piece-square tables as a [3][3][7][64]int array for fast access.
-// Indexed by [Phase][Color][PieceType][Square] where Color: 1=White, 2=Black and
-// PieceType: 1=King, 2=Queen, 3=Rook, 4=Bishop, 5=Knight, 6=Pawn.
-// Using arrays instead of nested maps eliminates map hashing overhead in the hot path.
+// fromA8ToA1 converts PST tables listed in A8..H1 order to engine A1..H8 indexing.
 func fromA8ToA1(src [64]int) [64]int {
 	// Source tables from chessprogramming/PeSTO are typically listed A8..H1.
 	// Convert to this engine's A1..H8 square indexing.

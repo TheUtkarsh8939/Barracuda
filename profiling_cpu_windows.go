@@ -12,6 +12,7 @@ var (
 	procGetProcessTimes = modKernel32.NewProc("GetProcessTimes")
 )
 
+// filetimeToUint64 converts FILETIME hi/lo parts to a single 64-bit tick value.
 func filetimeToUint64(ft syscall.Filetime) uint64 {
 	return uint64(ft.HighDateTime)<<32 | uint64(ft.LowDateTime)
 }

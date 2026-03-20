@@ -4,6 +4,7 @@ package main
 
 import "runtime/metrics"
 
+// Non-Windows CPU-time source used by profiling.go.
 // readCPUSeconds returns total process CPU-seconds from runtime metrics.
 func readCPUSeconds() float64 {
 	samples := []metrics.Sample{{Name: "/cpu/classes/total:cpu-seconds"}}

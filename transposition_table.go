@@ -1,9 +1,5 @@
 package main
 
-// ttSize is the number of entries in the array-based transposition table.
-// Must be a power of 2 so we can use bitwise AND for fast index computation.
-const ttSize = 1 << 20 // ~4M entries
-
 // ttMask is used to compute the TT index via hash & ttMask (equivalent to hash % ttSize).
 const ttMask = ttSize - 1
 
@@ -17,12 +13,6 @@ type ttEntry struct {
 	depth   uint8
 	bound   uint8
 }
-
-const (
-	ttBoundExact uint8 = iota
-	ttBoundLower
-	ttBoundUpper
-)
 
 // transpositionTable caches position evaluations indexed by Zobrist hash.
 // Array-based with modulo indexing for ~10x faster lookups than Go maps.

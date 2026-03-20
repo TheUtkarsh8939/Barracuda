@@ -7,20 +7,8 @@ import (
 	"github.com/corentings/chess/v2"
 )
 
-// Last Calculated Total material
+// lastTotalMaterial tracks non-king material used by phase interpolation.
 var lastTotalMaterial int = 0
-
-// Binary Masks to get files from bitboards
-var fileMasks = [8]uint64{
-	0b000000010000000100000001000000010000000100000001000000010,
-	0b000000100000001000000010000000100000001000000010000000100,
-	0b000001000000010000000100000001000000010000000100000001000,
-	0b000010000000100000001000000010000000100000001000000010000,
-	0b000100000001000000010000000100000001000000010000000100000,
-	0b001000000010000000100000001000000010000000100000001000000,
-	0b010000000100000001000000010000000100000001000000010000000,
-	0b100000001000000010000000100000001000000010000000100000001,
-}
 
 // pieceValues stores centipawn values indexed by PieceType (int8).
 // Using an array instead of a map eliminates map hashing overhead in the hot path.
@@ -61,41 +49,6 @@ func clampInt(x int, lo int, hi int) int {
 	return x
 }
 
-// Evaluate Double Pawns
-// Score is negative when there are doubled pawns or isolated files.
-// More negative = worse structure.
-func pawnStructure(pawnBitboard uint64) int {
-	score := 0
-	var pawnsPerFile [8]int
-	for i := range pawnsPerFile {
-		masked := pawnBitboard & fileMasks[i]
-
-		pawnsPerFile[i] = bits.OnesCount64(masked)
-	}
-
-	for i, count := range pawnsPerFile {
-		if count > 1 {
-			score -= (count - 1) * 2 // Each extra pawn on the same file costs -2.
-		}
-		// Penalty for isolated/half-open files (adjacent file has no pawn).
-		if i > 0 && pawnsPerFile[i-1] == 0 {
-			score--
-		}
-		if i < 7 && pawnsPerFile[i+1] == 0 {
-			score--
-		}
-	}
-
-	// Bonus for pawn chains: a pawn gets +2 if defended by a pawn on
-	// bottom-left or bottom-right (white attack geometry in A1=LSB mapping).
-	const fileA uint64 = 0x0101010101010101
-	const fileH uint64 = 0x8080808080808080
-	defendedPawns := pawnBitboard & (((pawnBitboard << 7) &^ fileH) | ((pawnBitboard << 9) &^ fileA))
-	score += bits.OnesCount64(defendedPawns) * 2
-
-	return score
-}
-
 // phaseWeights returns start/mid/end weights normalized to 24.
 func phaseWeights(totalMaterial int) (int, int, int) {
 	const maxMaterial = 7800
@@ -127,10 +80,17 @@ func phaseWeights(totalMaterial int) (int, int, int) {
 	return startWeight, midWeight, endWeight
 }
 
-// FastEvaluatePos uses Bitboard-based evaluation for faster performance.
+// EvaluatePos returns a static evaluation of the position in centipawns from White's perspective.
+// Positive = good for White, negative = good for Black.
+//
+// Components:
+//  1. Material: sum of all piece values on the board.
+//  2. Piece-Square Tables (PST): positional bonuses per piece per square.
+//  3. Pawn Structure: evaluates doubled, isolated, and backward pawns based on bitboard patterns.
+//  4. Endgame king centralization: as material drops, the winning side's king is rewarded
+//     for being near the center (active king is critical in endgames).
 func EvaluatePos(position *chess.Position, pst *PST) int {
-	//TODO: Replace the square based evaluation with bitboard-based evaluation for better performance.
-
+	// Primary fast evaluator: bitboard-driven material, PST, pawn structure, and king activity.
 	bbRaw, err := position.MarshalBinary()
 	if err != nil {
 		fmt.Errorf("Error in bitboard retrieval %w\n", err)
@@ -237,15 +197,14 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 //  4. Endgame king centralization: as material drops, the winning side's king is rewarded
 //     for being near the center (active king is critical in endgames).
 func LegacyEvaluatePos(position *chess.Position, pst *PST) int {
-	//TODO: Replace the square based evaluation with bitboard-based evaluation for better performance.
-
+	// Reference evaluator kept for parity checks and benchmarking.
 	bbRaw, err := position.MarshalBinary()
 	if err != nil {
 		fmt.Errorf("Error in bitboard retrieval %w\n", err)
 	}
 	// Extract pawn bitboards for pawn structure evaluation.
 	wbb, bbb := ExtractPawnBitboards(bbRaw)
-	score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
+	score := (pawnStructure(wbb) - pawnStructure(bbb)) * 5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
 	if position.Status() == chess.Checkmate {
 		if position.Turn() == chess.White {
 			return -99999 // White is checkmated
@@ -349,9 +308,11 @@ func LegacyEvaluatePos(position *chess.Position, pst *PST) int {
 //  1. Iterative deepening history (+700): best moves from previous shallower searches
 //  2. Promotions (+300–900): based on promotion piece value
 //  3. MVV-LVA captures: high-value captures with low-value attackers score highest
-//  4. Checks (+50): moves that give check are usually strong
-//  5. Castling (+40): generally a good king safety move
-//  6. Killer moves (+70): moves that caused cutoffs at the same depth in sibling nodes
+//  4. Checks (+100): forcing moves that often reduce reply count
+//  5. Castling (+150): king safety and rook activation
+//  6. Killer moves (+200): quiet moves that caused cutoffs at this depth
+//
+// Note: PV-follow bonus is applied in search.go where the node hash is available.
 func EvaluateMove(move *chess.Move, position *chess.Position, depth uint8) int {
 	score := 0
 	board := position.Board()

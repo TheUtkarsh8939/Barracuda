@@ -38,6 +38,10 @@ var pvTable [ttSize]pvEntry
 // lastPrincipalVariation stores the latest full best line from root to leaf.
 var lastPrincipalVariation []string
 
+// predictedPVByHash maps a position hash to the PV move predicted from that position.
+// It is rebuilt from the latest completed PV line and reused by the next search.
+var predictedPVByHash = make(map[uint64]Move)
+
 // pvLookup returns the cached best move for this position if available at sufficient depth.
 func pvLookup(h uint64, depth uint8) (string, bool) {
 	idx := h & ttMask
@@ -57,10 +61,38 @@ func pvStore(h uint64, depth uint8, move *chess.Move) {
 	pvTable[idx] = pvEntry{hashKey: h, depth: depth, moveUCI: fmt.Sprint(move)}
 }
 
-// clearPV resets principal variation state for a new search.
+// clearPV resets the per-search PV table/line state.
+// The predictedPVByHash map is updated separately after completed iterations.
 func clearPV() {
 	pvTable = [ttSize]pvEntry{}
 	lastPrincipalVariation = nil
+}
+
+// pvPredictedMove returns the previously predicted PV move for this position hash.
+func pvPredictedMove(h uint64) (Move, bool) {
+	m, ok := predictedPVByHash[h]
+	return m, ok
+}
+
+// updatePredictedPVFromLine rebuilds predictedPVByHash from a root position and PV UCI line.
+// This enables PV-follow ordering across moves: if the game follows the expected line,
+// the matching move is searched first with a strong ordering bonus.
+func updatePredictedPVFromLine(position *chess.Position, line []string) {
+	predictedPVByHash = make(map[uint64]Move, len(line))
+	current := position
+
+	for _, moveUCI := range line {
+		move, err := chess.Notation.Decode(chess.UCINotation{}, current, moveUCI)
+		if err != nil {
+			break
+		}
+
+		predictedPVByHash[fastPosHash(current)] = Move{move.S1(), move.S2()}
+		current = current.Update(move)
+		if current.Status() != chess.NoMethod {
+			break
+		}
+	}
 }
 
 // buildPVLine reconstructs the predicted best line from root at the given depth.

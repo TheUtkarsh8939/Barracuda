@@ -1,5 +1,7 @@
 package main
 
+// handler.go contains killer-move table utilities used by search ordering.
+
 // maxKillerDepth is the maximum depth for killer move storage.
 // Using a fixed-size array avoids map hashing overhead for killer lookups.
 const maxKillerDepth = 64
@@ -27,7 +29,7 @@ func storeKillerMove(depth uint8, move Move) {
 		entry.count++
 	} else {
 		entry.moves[1] = entry.moves[0] // Demote slot 0 → slot 1
-		entry.moves[0] = move            // New killer takes slot 0
+		entry.moves[0] = move           // New killer takes slot 0
 	}
 }
 

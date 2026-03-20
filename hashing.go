@@ -1,4 +1,4 @@
-// hashing.go — Barracuda's fast position hashing for TT and PV store.
+// hashing.go provides fast Zobrist-style hashing for TT/PV lookup and move-to-move updates.
 //
 // The library's built-in position.Hash() uses MarshalBinary + md5.Sum (~690 ns per call),
 // which is too slow for the search hot path. Two strategies replace it:

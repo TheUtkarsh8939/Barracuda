@@ -4,11 +4,6 @@ import (
 	"github.com/corentings/chess/v2"
 )
 
-// deltaMargin is the safety margin for delta pruning in quiescence search.
-// If the static eval plus the value of the captured piece plus this margin
-// cannot reach alpha, the capture is futile and can be skipped.
-const deltaMargin = 200
-
 // quiescence_search extends the search beyond the normal depth limit, but only for
 // "loud" moves (captures and checks). This solves the horizon effect: if minimax
 // stops searching right before a piece is captured, the position looks falsely stable.
@@ -23,6 +18,7 @@ const deltaMargin = 200
 // The depth parameter limits the quiescence search to prevent explosion
 // (positions with many forced captures could recurse very deeply otherwise).
 func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *PST) int {
+	// Count qsearch nodes separately while still contributing to global node count.
 	quiescenceNodesVisited++
 	nodesVisited++
 	// Stand-pat evaluation: the score if we make no more captures ("stand pat").

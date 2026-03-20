@@ -1007,6 +1007,70 @@ Key measured outcomes discussed and observed today:
 Some earlier sections above still describe pre-change behavior (for example, references to full `sort.Slice` move ordering in minimax). Treat this section as the authoritative update for today's code state.
 
 When convenient, the best cleanup pass is to fold this section back into Sections 3, 4, 6, 11, and 14 so the whole document reads consistently end-to-end.
+
+### 17.10 Aspiration Windows and Principal Variation Search (PVS)
+
+`search.go`
+
+Added two major alpha-beta pruning enhancements to reduce effective branching factor:
+
+**Aspiration Windows (`iterativeDeepening` + `rateAllMoves`)**
+- New constants:
+  - `aspiratingWindowMargin = 30` (centipawns)
+  - `aspirationMinDepth = 3` (minimum depth for aspiration)
+- Modified `iterativeDeepening` to track `prevScore` from the previous iteration's depth
+- On depths ≥ 3, `rateAllMoves` is called with `prevScore` parameter
+- Root search initializes alpha/beta as `[prevScore - margin, prevScore + margin]` instead of `[-∞, +∞]`
+- If the search fails outside the aspiration band, `rateAllMoves` recursively re-searches with full window
+- Expected impact: **15–25% node reduction** on typical positions (narrow windows cause more cutoffs)
+
+**Principal Variation Search (PVS) within `rateAllMoves`**
+- Modified move iteration to track move index: first move (idx == 0) is principal, rest are non-principal
+- Principal move: searched with full `[alpha, beta]` window (normal alpha-beta)
+- Non-principal moves (idx > 0):
+  - White: null-window search `[alpha, alpha+1]` first (quick rejection)
+    - If score > alpha and score < beta, re-search with full `[score, beta]` window
+  - Black: null-window search `[beta-1, beta]` first
+    - If score > alpha and score < beta, re-search with full `[alpha, score]` window
+- Rationale: with good move ordering, the first move is almost always best. Subsequent moves are likely worse, so a narrow window quickly rejects them without exploring deep. Only moves that "threaten" to be good force a full re-search.
+- Expected impact: **5–15% additional node reduction** when combined with aspiration windows
+
+**Performance effect together:**
+- Aspiration windows + PVS are synergistic: aspiration sets tighter root windows, which cascade through the tree
+- Combined typical improvement at depth 6–10: **25–35% fewer nodes**
+- However, on positions with surprising moves (quiet breakthroughs, long-term sacrifices), the narrow aspiration window may cause re-searches; net gain degrades gracefully in those cases
+
+**How to tune:**
+- `aspiratingWindowMargin`: larger values (50–70) reduce re-searches but search wider windows (diminishing returns); smaller values (15–20) tighten the window but cost more re-searches
+- `aspirationMinDepth`: setting to 2 includes shallow iterations; setting to 4+ skips smaller depth budgets
+- Null-window re-search thresholds: the current logic `(score > alpha && score < beta)` is the standard; some engines use tighter conditions (e.g., `score >= beta - 1` for white) to reduce re-searches further
+
+### 17.11 Last-PV Follow Ordering Across Moves
+
+`pv_store.go`, `search.go`
+
+Implemented last-PV continuation as a **move-ordering signal**, not as a hard line lock:
+
+- Added `predictedPVByHash map[uint64]Move` in `pv_store.go`
+    - Key: position hash
+    - Value: move that the previously completed PV predicted from that position
+- Added helper APIs:
+    - `pvPredictedMove(h uint64) (Move, bool)`
+    - `updatePredictedPVFromLine(position, line)`
+- At each iterative deepening depth completion, after `buildPVLine`, the engine rebuilds `predictedPVByHash` from the latest PV line
+
+Search integration:
+
+- New ordering constant in `search.go`:
+    - `pvFollowBonus = 1000`
+- In `minimax`, while building per-node move scores, if a move matches `pvPredictedMove(posHash)`, add `pvFollowBonus`
+- In `rateAllMoves` (root), switched to scored move ordering and applied the same PV-follow bonus before PVS probing
+
+Behavioral result:
+
+- If opponent plays what last PV predicted, search naturally continues down that line quickly (high cutoff potential)
+- If opponent deviates, no line is forced; engine still searches all legal moves, but predicted move remains highly prioritized where applicable
+- This preserves tactical safety while extracting speed from stable principal variations
 depth like killers). Score moves by `history[from][to]` and use it to bias move ordering.
 Complements killers and iterative deepening history.
 
@@ -1019,6 +1083,51 @@ For positions with ≤6 pieces, tablebases give exact results instantly. Even pa
 tablebase support (probing at the root) dramatically improves endgame play.
 
 ---
+
+## 15. Configuration: Centralized Tuning Constants
+
+All engine tuning parameters are defined in a single file: `config_variables.go`.
+
+This ensures consistent configuration across the entire codebase and makes tuning clear and auditable.
+
+### Configuration Sections
+
+**Transposition Table:**
+- `ttSize = 1 << 20` — 1,048,576 entry hash table
+- Bound flags: `ttBoundExact`, `ttBoundLower`, `ttBoundUpper`
+
+**PST Phases:**
+- `pstStart`, `pstMiddle`, `pstEnd` — phase transition indices
+
+**Search Bounds & Depth:**
+- `maxScore / minScore = ±999999` — sentinel alpha/beta bounds
+- `quiescenceDepth = 3` — max plies beyond main search depth
+
+**Late Move Reduction (LMR):**
+- `lmrMinDepth = 4` — minimum depth to apply LMR
+- `lmrMoveIndex = 4` — first 4 moves at full depth, rest reduced
+
+**Null-Move Pruning:**
+- `nullMoveMinDepth = 3` — minimum depth for null-move try
+- `nullMoveReduction = 2` — depth reduction when testing null move
+
+**Aspiration Windows + PVS:**
+- `aspiratingWindowMargin = 30` — centipawn band around previous score
+- `aspirationMinDepth = 3` — apply aspiration window at depth ≥ 3
+- `pvFollowBonus = 1000` — ordering bonus for predicted PV moves
+
+**Quiescence & Move Ordering:**
+- `deltaMargin = 200` — safety margin for delta pruning
+
+**Profiling:**
+- `benchmarkCalls = 1000000` — iterations per function in MODE=4
+
+### Tuning Workflow
+
+When experimenting with optimizations:
+1. Adjust constants in `config_variables.go`
+2. Run `MODE=1` benchmark to measure nodes/time impact
+3. Log successful tuning results in `learn.md` and commit changes
 
 ## 16. Build Instructions
 

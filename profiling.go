@@ -8,8 +8,6 @@ import (
 	"github.com/corentings/chess/v2"
 )
 
-const benchmarkCalls = 1000000
-
 // Sink variables make benchmark results observable so the compiler cannot optimize calls away.
 var (
 	benchIntSink    int
@@ -75,7 +73,7 @@ func runBenchmark(functionName string, calls int, fn func(iter int)) {
 	fmt.Printf("%s took %vns and used %.2f percent of cpu\n\n", functionName, int(elapsedTime.Nanoseconds())/calls, usedCPUPercent)
 }
 
-// Benchmark profiles the hottest functions in the engine using 1,000,000 calls each.
+// Benchmark profiles hot functions using benchmarkCalls iterations each.
 func Benchmark() {
 	fmt.Println("Starting profiling benchmarks...")
 	fmt.Printf("Calls per function: %d\n\n", benchmarkCalls)

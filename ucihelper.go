@@ -15,6 +15,7 @@ import (
 //
 // Unrecognized tokens are silently ignored, and each option reads the
 // next token as its value (standard UCI key-value format).
+// Current search launcher primarily uses depth/infinite; clock fields are parsed for future time management.
 func parseGoCmd(cmd string) *SearchOptions {
 	result := &SearchOptions{}
 	tokens := strings.Split(cmd, " ")

@@ -29,8 +29,7 @@ type SearchOptions struct {
 
 // InsertionSort sorts a move slice in-place using the provided comparator.
 // Insertion sort is O(n²) but performs well on nearly-sorted data.
-// This was written as an alternative to sort.Slice for benchmarking;
-// currently sort.Slice is used in production (see search.go).
+// Kept for experiments; production search uses incremental selection ordering.
 func InsertionSort(moves []*chess.Move, less func(a, b *chess.Move) bool) {
 	n := len(moves)
 	for i := 1; i < n; i++ {

@@ -1,4 +1,4 @@
-# Python script to generate Go code for repetetive task
+# Python helper script to generate Go constants for repetitive bitboard masks.
 def createBitboardMasks():
     value = sum(1 << (i * 8) for i in range(8))
     value1 = value << 1

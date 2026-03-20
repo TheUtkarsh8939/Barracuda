@@ -4,47 +4,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/corentings/chess/v2"
 )
 
-// TEMPORARY
+// positionUpdateCalls is a debug/benchmark counter for Update() calls during search.
 var positionUpdateCalls int = 0
-
-// Score bounds used as sentinel values instead of float64 math.Inf.
-// Using int throughout the search avoids expensive float64 operations.
-const (
-	// maxScore / minScore act as +∞ and -∞ for alpha and beta initialization.
-	// Values are large enough to exceed any realistic evaluation (max material ≈ 8000 cp)
-	// but small enough to leave headroom for depth-dependent adjustments without overflow.
-	maxScore = 999999
-	minScore = -999999
-
-	// quiescenceDepth limits how many extra plies the quiescence search extends beyond the
-	// main search horizon. Each ply only considers captures and checks (not all legal moves),
-	// so the branching factor is much lower than the main search. 3 provides enough depth
-	// to resolve most tactical sequences (e.g. exchange chains, back-rank checks) while
-	// keeping the node count manageable. Increase this for better tactical accuracy;
-	// decrease it if the engine spends too long in quiescence on forcing positions.
-	quiescenceDepth = 3
-
-	// lmrMinDepth is the minimum remaining depth at which Late Move Reduction is applied.
-	// At depths shallower than this the search is already cheap, so reducing further risks
-	// missing important moves near the leaf. Only nodes with depth >= lmrMinDepth are reduced.
-	lmrMinDepth = 4
-
-	// lmrMoveIndex is the 0-based move index after which LMR kicks in.
-	// The first lmrMoveIndex moves are always searched at full depth regardless of score,
-	// because after good move ordering the best move is almost always in this group.
-	// Later moves (index >= lmrMoveIndex) with a low ordering score are reduced to depth-2
-	// first, then confirmed at full depth only if they beat the current best.
-	lmrMoveIndex = 4
-
-	// Null-move pruning settings. At sufficient depth, we search a "pass" move with
-	// reduced depth; if it still fails high/low, we can prune this node.
-	nullMoveMinDepth  = 3
-	nullMoveReduction = 2
-)
 
 // lastBestMoves is a set of moves found best at previous iterative deepening depths.
 // Stored by square pair (Move struct) for O(1) lookup with no string allocation.
@@ -56,8 +22,8 @@ type moveWithScore struct {
 	score int
 }
 
-// pickNextBestMove does one selection-sort step in place.
-// This lets alpha-beta stop early without paying the full sort.Slice cost first.
+// pickNextBestMove does one in-place selection step for partial ordering.
+// This avoids full sorting and pairs well with alpha-beta cutoffs.
 func pickNextBestMove(moveList []moveWithScore, start int) moveWithScore {
 	bestIdx := start
 	bestScore := moveList[start].score
@@ -166,11 +132,16 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 	// the more branches alpha-beta can prune.
 	movesRaw := position.ValidMoves()
 	moveList := make([]moveWithScore, len(movesRaw))
+	pvMove, hasPVMove := pvPredictedMove(posHash)
 	for i, moveObj := range movesRaw {
 		m := &moveObj
+		score := EvaluateMove(m, position, depth)
+		if hasPVMove && pvMove == (Move{m.S1(), m.S2()}) {
+			score += pvFollowBonus
+		}
 		moveList[i] = moveWithScore{
 			move:  m,
-			score: EvaluateMove(m, position, depth),
+			score: score,
 		}
 	}
 
@@ -272,8 +243,15 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 // along with its score. The transposition table is NOT cleared between depth iterations;
 // depth-aware entries from shallower searches remain valid and accelerate deeper ones.
 // Castling gets a +200 root bonus to encourage the engine to castle when it's roughly equal.
-// Uses alpha-beta window at root level to prune moves that can't improve on the best found so far.
-func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool) (*chess.Move, int) {
+//
+// Uses aspiration windows (from previous iteration's score) to narrow the search window
+// when depth >= aspirationMinDepth and useAspiration=true. If the search fails outside the aspiration band,
+// a full-window re-search is performed with useAspiration=false.
+//
+// Within each root-level move, PVS is applied: the first move is searched with full
+// alpha-beta window; subsequent moves use null-window searches [alpha, alpha+1] to
+// quickly reject them, with full-window re-searches only for moves that escape the null window.
+func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool, prevScore int, useAspiration bool) (*chess.Move, int) {
 	rootHash := fastPosHash(position)
 	bestMove := &chess.Move{}
 	bestScore := minScore
@@ -284,15 +262,60 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool)
 		bestScore = maxScore
 	}
 
-	moves := position.ValidMoves()
+	// Aspiration window: narrow the window if we have trust in the previous score.
+	aspirate := useAspiration && depth >= aspirationMinDepth
+	if aspirate {
+		if isWhite {
+			alpha = prevScore - aspiratingWindowMargin
+			beta = prevScore + aspiratingWindowMargin
+		} else {
+			alpha = prevScore - aspiratingWindowMargin
+			beta = prevScore + aspiratingWindowMargin
+		}
+	}
 
-	for _, moveObj := range moves {
+	movesRaw := position.ValidMoves()
+	moveList := make([]moveWithScore, len(movesRaw))
+	pvMove, hasPVMove := pvPredictedMove(rootHash)
+	for i, moveObj := range movesRaw {
+		m := &moveObj
+		score := EvaluateMove(m, position, depth)
+		if hasPVMove && pvMove == (Move{m.S1(), m.S2()}) {
+			score += pvFollowBonus
+		}
+		moveList[i] = moveWithScore{move: m, score: score}
+	}
+
+	for idx := 0; idx < len(moveList); idx++ {
+		picked := pickNextBestMove(moveList, idx)
 		//Getting the move pointer
-		move := &moveObj
+		move := picked.move
 		child := position.Update(move)
 		positionUpdateCalls++
 		childHash := fastChildHash(position, child, move, rootHash)
-		score := minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
+
+		var score int
+		if idx == 0 {
+			// Principal move: search with full window
+			score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
+		} else {
+			// Non-principal moves: use null-window search first
+			// This quickly rejects moves that don't improve on alpha (or beta for black)
+			if isWhite {
+				score = minimax(child, depth-1, !isWhite, alpha, alpha+1, childHash, pst, true)
+				// If null-window search fails high, re-search with full window
+				if score > alpha && score < beta {
+					score = minimax(child, depth-1, !isWhite, score, beta, childHash, pst, true)
+				}
+			} else {
+				score = minimax(child, depth-1, !isWhite, beta-1, beta, childHash, pst, true)
+				// If null-window search fails low, re-search with full window
+				if score > alpha && score < beta {
+					score = minimax(child, depth-1, !isWhite, alpha, score, childHash, pst, true)
+				}
+			}
+		}
+
 		// Apply a root-level castling bonus — castling is good for king safety.
 		if isCastlingMove(move) {
 			score += 200
@@ -316,6 +339,15 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool)
 		}
 	}
 
+	// Handle aspiration window failure: if score fell outside the original window, retry with full window
+	if aspirate {
+		if (isWhite && bestScore <= (prevScore-aspiratingWindowMargin)) ||
+			(!isWhite && bestScore >= (prevScore+aspiratingWindowMargin)) {
+			// Score failed low (Black) or high (White); re-search with full window
+			return rateAllMoves(position, depth, pst, isWhite, prevScore, false)
+		}
+	}
+
 	pvStore(rootHash, depth, bestMove)
 
 	return bestMove, bestScore
@@ -326,6 +358,9 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool)
 //  1. A valid best move is always available (even if search is interrupted early via stopSearch).
 //  2. Best moves found at shallower depths are stored in lastBestMoves and used to
 //     boost move ordering at deeper depths, increasing alpha-beta cutoffs.
+//
+// Aspiration windows are applied at depth >= aspirationMinDepth using the previous
+// iteration's score as a guide, reducing the search window and improving cutoff efficiency.
 //
 // UCI engines emit "info depth X score cp Y" lines so the GUI can track search progress.
 func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWhite bool) {
@@ -338,6 +373,7 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 	clearPV()
 	bestMove := &chess.Move{}
 	bestScore := 0
+	prevScore := 0 // Used for aspiration window in next iteration
 	for i := 0; i < int(maxDepth); i++ {
 		select {
 		case <-stopSearch:
@@ -349,13 +385,17 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 			return
 		default:
 			depth := uint8(i + 1)
-			bestMove, bestScore = rateAllMoves(position, depth, pst, isWhite)
+			timeNow := time.Now()
+			bestMove, bestScore = rateAllMoves(position, depth, pst, isWhite, prevScore, true)
+			elapsed := time.Since(timeNow).Seconds()
+			prevScore = bestScore // Store for next iteration's aspiration window
 			lastPrincipalVariation = buildPVLine(position, depth)
+			updatePredictedPVFromLine(position, lastPrincipalVariation)
 			lastBestMoves[Move{bestMove.S1(), bestMove.S2()}] = true
 			if len(lastPrincipalVariation) > 0 {
-				fmt.Printf("info depth %d score cp %d pv %s\n", i+1, bestScore, strings.Join(lastPrincipalVariation, " "))
+				fmt.Printf("info depth %d score cp %d nodes %d nps %f pv %s\n", i+1, bestScore, nodesVisited, float64(nodesVisited)/elapsed, strings.Join(lastPrincipalVariation, " "))
 			} else {
-				fmt.Printf("info depth %d score cp %d \n", i+1, bestScore)
+				fmt.Printf("info depth %d score cp  %d nodes %d nps %f\n", i+1, bestScore, nodesVisited, float64(nodesVisited)/elapsed)
 			}
 		}
 	}
@@ -363,7 +403,6 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 		fmt.Printf("info pv %s\n", strings.Join(lastPrincipalVariation, " "))
 	}
 	fmt.Println("bestmove", bestMove)
-	fmt.Println("Nodes Searched: " + fmt.Sprintf("%d", nodesVisited))
 	// Clean up state for the next search.
 	lastBestMoves = make(map[Move]bool)
 	clearKillerTable()
