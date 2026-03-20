@@ -303,13 +303,13 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 			// This quickly rejects moves that don't improve on alpha (or beta for black)
 			if isWhite {
 				score = minimax(child, depth-1, !isWhite, alpha, alpha+1, childHash, pst, true)
-				// If null-window search is inside bounds, re-search with full window.
+				// Null-window fail-high: re-search with full window.
 				if score > alpha && score < beta {
 					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
 				}
 			} else {
 				score = minimax(child, depth-1, !isWhite, beta-1, beta, childHash, pst, true)
-				// If null-window search is inside bounds, re-search with full window.
+				// Null-window fail-low: re-search with full window.
 				if score > alpha && score < beta {
 					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
 				}
