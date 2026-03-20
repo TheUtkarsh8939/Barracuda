@@ -24,9 +24,17 @@ var fileMasks = [8]uint64{
 
 // pieceValues stores centipawn values indexed by PieceType (int8).
 // Using an array instead of a map eliminates map hashing overhead in the hot path.
-// Index 0 = NoPieceType, 1 = King, 2 = Queen, 3 = Rook, 4 = Bishop, 5 = Knight, 6 = Pawn
-var pieceValues = [7]int{
-	0,      // NoPieceType
+// Index 0 = King, 1 = Queen, 2 = Rook, 3 = Bishop, 4 = Knight, 5 = Pawn
+var pieceValues = [6]int{
+	100000, // King — arbitrarily large, losing the king means losing the game
+	900,    // Queen
+	500,    // Rook
+	300,    // Bishop
+	300,    // Knight
+	100,    // Pawn
+}
+var legacyPieceValues = [7]int{
+	0,
 	100000, // King — arbitrarily large, losing the king means losing the game
 	900,    // Queen
 	500,    // Rook
@@ -119,6 +127,106 @@ func phaseWeights(totalMaterial int) (int, int, int) {
 	return startWeight, midWeight, endWeight
 }
 
+// FastEvaluatePos uses Bitboard-based evaluation for faster performance.
+func EvaluatePos(position *chess.Position, pst *PST) int {
+	//TODO: Replace the square based evaluation with bitboard-based evaluation for better performance.
+
+	bbRaw, err := position.MarshalBinary()
+	if err != nil {
+		fmt.Errorf("Error in bitboard retrieval %w\n", err)
+	}
+	// Extract pawn bitboards for pawn structure evaluation.
+	bitboards := ExtractPieceBitboard(bbRaw)
+	wbb, bbb := bitboards[5], bitboards[11]
+	score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
+	if position.Status() == chess.Checkmate {
+		if position.Turn() == chess.White {
+			return -99999 // White is checkmated
+		} else {
+			return 99999 // Black is checkmated
+		}
+	}
+	evaluateFunctionCalls++
+	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
+	if bitboards[0] != 0 {
+		wkSq := bits.TrailingZeros64(bitboards[0])
+		whiteKingFile = wkSq % 8
+		whiteKingRank = wkSq / 8
+	}
+	if bitboards[6] != 0 {
+		bkSq := bits.TrailingZeros64(bitboards[6])
+		blackKingFile = bkSq % 8
+		blackKingRank = bkSq / 8
+	}
+	// Start at -200000 to cancel out both kings' values from the material total.
+	// We only want non-king material to drive the endgame detection index.
+	totalMaterial := -200000
+	//Get Pawn Bitboard
+
+	openingScore := 0
+	middleScore := 0
+	endScore := 0
+	for pieceIdx := 0; pieceIdx < 6; pieceIdx++ {
+		whiteBB := bitboards[pieceIdx]
+		blackBB := bitboards[pieceIdx+6]
+		whiteCount := bits.OnesCount64(whiteBB)
+		blackCount := bits.OnesCount64(blackBB)
+		material := pieceValues[pieceIdx]
+
+		totalMaterial += material * (whiteCount + blackCount)
+		score += material * (whiteCount - blackCount)
+
+		pieceType := pieceIdx + 1
+		openingScore += AddPSTViaBitboard(whiteBB, &pst[pstStart][chess.White][pieceType])
+		middleScore += AddPSTViaBitboard(whiteBB, &pst[pstMiddle][chess.White][pieceType])
+		endScore += AddPSTViaBitboard(whiteBB, &pst[pstEnd][chess.White][pieceType])
+
+		openingScore -= AddPSTViaBitboard(blackBB, &pst[pstStart][chess.Black][pieceType])
+		middleScore -= AddPSTViaBitboard(blackBB, &pst[pstMiddle][chess.Black][pieceType])
+		endScore -= AddPSTViaBitboard(blackBB, &pst[pstEnd][chess.Black][pieceType])
+	}
+
+	// Endgame king centralization:
+	// As material depletes, kings should move toward the center to support pawns and give checkmate.
+	// endGameIndex rises as pieces come off the board; smartEndgameFactor is 0 in the middlegame
+	// and increases proportionally in the endgame.
+	// maxMaterial (7800) = sum of all non-king pieces in starting position:
+	// 2 queens (1800) + 4 rooks (2000) + 4 bishops (1200) + 4 knights (1200) + 16 pawns (1600)
+	const maxMaterial = 7800
+	endGameIndex := maxMaterial - totalMaterial
+	lastTotalMaterial = totalMaterial
+	wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
+	// Phase weights are normalized to 24.
+	score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
+	// Only activate endgame king centralization after ~4900 material is traded.
+	if endGameIndex > 4900 {
+		// Use integer-based distance approximation (Manhattan distance from center ~4.5).
+		// Multiply distances by 2 to work in half-squares and avoid float, center at (9,9).
+		blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
+		whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
+		smartEndgameFactor := (endGameIndex - 4900) // /100 * 50 => /2
+		// Reward White if Black's king is far from center and White's is close (and vice versa).
+		score += (-whiteDist + blackDist) * smartEndgameFactor / 4
+	}
+
+	// // Castling rights bonus: losing the right to castle permanently is a king safety risk.
+	// castleRights := position.CastleRights()
+	// if castleRights.CanCastle(chess.White, chess.KingSide) {
+	// 	score += 50
+	// }
+	// if castleRights.CanCastle(chess.White, chess.QueenSide) {
+	// 	score += 40
+	// }
+	// if castleRights.CanCastle(chess.Black, chess.KingSide) {
+	// 	score -= 50
+	// }
+	// if castleRights.CanCastle(chess.Black, chess.QueenSide) {
+	// 	score -= 40
+	// }
+
+	return score
+}
+
 // EvaluatePos returns a static evaluation of the position in centipawns from White's perspective.
 // Positive = good for White, negative = good for Black.
 //
@@ -128,7 +236,7 @@ func phaseWeights(totalMaterial int) (int, int, int) {
 //  3. Castling rights: bonus for retaining the right to castle (king safety indicator).
 //  4. Endgame king centralization: as material drops, the winning side's king is rewarded
 //     for being near the center (active king is critical in endgames).
-func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
+func LegacyEvaluatePos(position *chess.Position, pst *PST) int {
 	//TODO: Replace the square based evaluation with bitboard-based evaluation for better performance.
 
 	bbRaw, err := position.MarshalBinary()
@@ -137,7 +245,7 @@ func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
 	}
 	// Extract pawn bitboards for pawn structure evaluation.
 	wbb, bbb := ExtractPawnBitboards(bbRaw)
-	score := pawnStructure(wbb)*20 - pawnStructure(bbb)*10 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
+	score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
 	if position.Status() == chess.Checkmate {
 		if position.Turn() == chess.White {
 			return -99999 // White is checkmated
@@ -168,7 +276,7 @@ func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
 		opening := pst[pstStart][pieceColor][pieceType][sq]
 		middle := pst[pstMiddle][pieceColor][pieceType][sq]
 		end := pst[pstEnd][pieceColor][pieceType][sq]
-		material := pieceValues[pieceType]
+		material := legacyPieceValues[pieceType]
 		totalMaterial += material
 		sc := material
 		pstSign := 1
@@ -246,6 +354,7 @@ func EvaluatePos(position *chess.Position, pst *[3][3][7][64]int) int {
 //  6. Killer moves (+70): moves that caused cutoffs at the same depth in sibling nodes
 func EvaluateMove(move *chess.Move, position *chess.Position, depth uint8) int {
 	score := 0
+	board := position.Board()
 
 	// Iterative deepening history: moves that were best at shallower depths are likely good here too.
 	// Map lookup by square pair — O(1) with no string allocation.
@@ -257,16 +366,19 @@ func EvaluateMove(move *chess.Move, position *chess.Position, depth uint8) int {
 	// Prefer captures that trade up (e.g. pawn takes queen) over trades that lose material.
 	// If the trade is losing (negative), we still assign a small +30 so captures are tried before quiet moves.
 	if move.HasTag(chess.Capture) {
-		victim := position.Board().Piece(move.S2())   // Piece being captured
-		attacker := position.Board().Piece(move.S1()) // Piece doing the capturing
+		victim := board.Piece(move.S2()) // Piece being captured
+		attacker := board.Piece(move.S1())
 		if victim.Type() != chess.NoPieceType {
-			toSet := pieceValues[victim.Type()] - pieceValues[attacker.Type()]
+			toSet := legacyPieceValues[victim.Type()] - legacyPieceValues[attacker.Type()]
 			if toSet < 1 {
 				toSet = 30 // Floor: even bad captures are searched before quiet moves
 			}
 			score += toSet
 		}
 	}
+
+	// Lightweight pawn-structure proxy for move ordering quality.
+	// score += pawnMoveOrderingBonus(move, board)
 
 	// Promotion bonuses: scored by the value of the piece promoted to.
 	if move.Promo() == chess.Queen {

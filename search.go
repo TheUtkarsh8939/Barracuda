@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/corentings/chess/v2"
@@ -40,6 +39,11 @@ const (
 	// Later moves (index >= lmrMoveIndex) with a low ordering score are reduced to depth-2
 	// first, then confirmed at full depth only if they beat the current best.
 	lmrMoveIndex = 4
+
+	// Null-move pruning settings. At sufficient depth, we search a "pass" move with
+	// reduced depth; if it still fails high/low, we can prune this node.
+	nullMoveMinDepth  = 3
+	nullMoveReduction = 2
 )
 
 // lastBestMoves is a set of moves found best at previous iterative deepening depths.
@@ -50,6 +54,37 @@ var lastBestMoves = make(map[Move]bool)
 type moveWithScore struct {
 	move  *chess.Move
 	score int
+}
+
+// pickNextBestMove does one selection-sort step in place.
+// This lets alpha-beta stop early without paying the full sort.Slice cost first.
+func pickNextBestMove(moveList []moveWithScore, start int) moveWithScore {
+	bestIdx := start
+	bestScore := moveList[start].score
+	for j := start + 1; j < len(moveList); j++ {
+		if moveList[j].score > bestScore {
+			bestScore = moveList[j].score
+			bestIdx = j
+		}
+	}
+	moveList[start], moveList[bestIdx] = moveList[bestIdx], moveList[start]
+	return moveList[start]
+}
+
+// hasNonPawnMaterial helps avoid null-move pruning in pawn-only endgames (zugzwang-prone).
+func hasNonPawnMaterial(position *chess.Position) bool {
+	board := position.Board()
+	for sq := 0; sq < 64; sq++ {
+		p := board.Piece(chess.Square(sq))
+		if p == chess.NoPiece {
+			continue
+		}
+		pt := p.Type()
+		if pt != chess.King && pt != chess.Pawn {
+			return true
+		}
+	}
+	return false
 }
 
 // hashToUint64 converts a [16]byte Zobrist hash to uint64 for TT indexing.
@@ -70,7 +105,7 @@ func hashToUint64(h [16]byte) uint64 {
 // list are searched at depth-2 instead of depth-1. If they beat the current best,
 // a full re-search at depth-1 is done to confirm. This saves significant time since
 // later moves (after good ordering) are unlikely to be best.
-func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, posHash uint64, pst *[3][3][7][64]int) int {
+func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, posHash uint64, pst *PST, allowNull bool) int {
 	nodesVisited++
 
 	alphaOrig := alpha
@@ -108,6 +143,24 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		return eval
 	}
 
+	// Null-move pruning: if even after giving the opponent a free move the position is still
+	// good enough to fail high/low, this node can often be pruned safely.
+	if allowNull && depth >= nullMoveMinDepth && hasNonPawnMaterial(position) {
+		nullPos := position.Update(nil)
+		nullHash := fastPosHash(nullPos)
+		if maximizer {
+			nullScore := minimax(nullPos, depth-1-nullMoveReduction, false, beta-1, beta, nullHash, pst, false)
+			if nullScore >= beta {
+				return nullScore
+			}
+		} else {
+			nullScore := minimax(nullPos, depth-1-nullMoveReduction, true, alpha, alpha+1, nullHash, pst, false)
+			if nullScore <= alpha {
+				return nullScore
+			}
+		}
+	}
+
 	// Generate and score all legal moves for sorting.
 	// Good move ordering is critical: the sooner we find a strong move,
 	// the more branches alpha-beta can prune.
@@ -121,31 +174,27 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		}
 	}
 
-	// Use built-in quicksort (sort.Slice) to order moves by score (descending).
-	sort.Slice(moveList, func(i, j int) bool {
-		return moveList[i].score > moveList[j].score
-	})
-
 	if maximizer {
 		bestScore := minScore
 		bestMove := &chess.Move{}
 		for i := 0; i < len(moveList); i++ {
 			var score int
-			currentMove := moveList[i].move
+			picked := pickNextBestMove(moveList, i)
+			currentMove := picked.move
 			positionUpdateCalls++
 			child := position.Update(currentMove)
 			childHash := fastChildHash(position, child, currentMove, posHash)
 			// Late Move Reduction: moves beyond the first few are likely weaker after good ordering.
 			// Search them at reduced depth first; only do a full search if they look promising.
-			if i >= lmrMoveIndex && depth >= lmrMinDepth && moveList[i].score < 50 {
-				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst)
+			if i >= lmrMoveIndex && depth >= lmrMinDepth && picked.score < 50 {
+				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst, true)
 				if score > alpha {
 					// Promising — confirm with a full-depth search.
-					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst)
+					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
 				}
 			} else {
 				// Normal full-depth search for early (likely better) moves.
-				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst)
+				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
 			}
 			if score > bestScore {
 				bestMove = currentMove
@@ -177,19 +226,20 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		bestMove := &chess.Move{}
 		for i := 0; i < len(moveList); i++ {
 			var score int
-			currentMove := moveList[i].move
+			picked := pickNextBestMove(moveList, i)
+			currentMove := picked.move
 			positionUpdateCalls++
 			child := position.Update(currentMove)
 			childHash := fastChildHash(position, child, currentMove, posHash)
 			// Late Move Reduction (minimizer side).
-			if i >= lmrMoveIndex && depth >= lmrMinDepth && moveList[i].score < 50 {
-				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst)
+			if i >= lmrMoveIndex && depth >= lmrMinDepth && picked.score < 50 {
+				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst, true)
 				if score < beta {
 					// Promising — confirm with a full-depth search.
-					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst)
+					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
 				}
 			} else {
-				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst)
+				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
 			}
 			if score < bestScore {
 				bestMove = currentMove
@@ -223,7 +273,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 // depth-aware entries from shallower searches remain valid and accelerate deeper ones.
 // Castling gets a +200 root bonus to encourage the engine to castle when it's roughly equal.
 // Uses alpha-beta window at root level to prune moves that can't improve on the best found so far.
-func rateAllMoves(position *chess.Position, depth uint8, pst *[3][3][7][64]int, isWhite bool) (*chess.Move, int) {
+func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool) (*chess.Move, int) {
 	rootHash := fastPosHash(position)
 	bestMove := &chess.Move{}
 	bestScore := minScore
@@ -242,7 +292,7 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *[3][3][7][64]int, 
 		child := position.Update(move)
 		positionUpdateCalls++
 		childHash := fastChildHash(position, child, move, rootHash)
-		score := minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst)
+		score := minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
 		// Apply a root-level castling bonus — castling is good for king safety.
 		if isCastlingMove(move) {
 			score += 200
@@ -278,7 +328,7 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *[3][3][7][64]int, 
 //     boost move ordering at deeper depths, increasing alpha-beta cutoffs.
 //
 // UCI engines emit "info depth X score cp Y" lines so the GUI can track search progress.
-func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *[3][3][7][64]int, isWhite bool) {
+func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWhite bool) {
 	nodesVisited = 0
 	leafNodesVisited = 0
 	quiescenceNodesVisited = 0

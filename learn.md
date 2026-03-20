@@ -898,6 +898,115 @@ with a wider window. This dramatically reduces the root search cost on most iter
 
 **History heuristic**
 Track which quiet moves caused beta cutoffs across the whole search (not just at the same
+
+---
+
+## 17. March 20, 2026 — Full Change Log
+
+This section documents the changes made today that were either missing from this file or no longer matched the current code.
+
+### 17.1 Evaluation Refactor and Parity Work
+
+`eval.go`
+
+- Introduced a fast bitboard-based evaluator as the primary `EvaluatePos` path.
+- Renamed the previous square-iteration evaluator to `LegacyEvaluatePos` so both versions can be compared.
+- Added a new `pieceValues [6]int` for the bitboard evaluator (King..Pawn) and kept `legacyPieceValues [7]int` for legacy code that indexes by `PieceType` directly.
+- Kept the same high-level eval components in the fast path:
+    - Pawn structure term
+    - Material
+    - Opening/middle/end PST blend
+    - Endgame king centralization
+- Fixed a major parity bug in fast eval where:
+    - White/Black bitboards were being mixed incorrectly in PST accumulation
+    - King locations for endgame centralization were not always set
+    - Material sign accounting needed white-minus-black behavior
+
+### 17.2 Bitboard PST Accumulation Utilities
+
+`misc.go`
+
+- Added `ExtractPieceBitboard(bbRaw []byte) [12]uint64` to decode all 12 piece bitboards from `MarshalBinary` output.
+- Implemented `AddPSTViaBitboard(bitboard uint64, pst *[64]int) int` using a low-bit iteration loop:
+    - `bits.TrailingZeros64`
+    - `bitboard &= bitboard - 1`
+- Switched PST parameter from value to pointer (`*[64]int`) to avoid array copies.
+- Fixed a subtle but critical square-index mapping issue:
+    - `MarshalBinary` bitboards are file-mirrored relative to PST square indexing
+    - Corrected mapping with `sq := bbIdx ^ 7` before PST lookup
+
+This index fix is what removed the remaining intermittent divergence between fast and legacy eval.
+
+### 17.3 Quiescence Search Optimization
+
+`quiescence_search.go`
+
+- Moved `ValidMoves()` generation to after stand-pat checks, so nodes that cut off immediately do not pay move-generation cost.
+- Updated signatures to use the `PST` type alias consistently.
+- Updated delta-pruning victim value lookups to use `legacyPieceValues` for correct `PieceType` indexing.
+
+### 17.4 Search Engine Changes (Major)
+
+`search.go`
+
+- Replaced full `sort.Slice` ordering with an incremental selector:
+    - Added `pickNextBestMove(moveList, start)`
+    - This performs one selection step per iteration and allows cutoff before paying full sort cost.
+- Added null-move pruning:
+    - Constants: `nullMoveMinDepth`, `nullMoveReduction`
+    - Added `allowNull` recursion guard to prevent consecutive null moves
+    - Added `hasNonPawnMaterial` guard to avoid common pawn-only zugzwang traps
+    - Uses reduced-depth null search and early fail-high/fail-low pruning
+- Updated function signatures to use `*PST` consistently across search entry points.
+- Updated recursive minimax callsites accordingly.
+
+### 17.5 PST Type Cleanup
+
+`pst.go`
+
+- Added type alias:
+
+```go
+type PST [3][3][7][64]int
+```
+
+- Updated helpers and `initPST()` to return/use `PST` directly.
+
+This removed repeated long literal types across files and made signatures cleaner.
+
+### 17.6 Profiling Harness Improvements
+
+`profiling.go`
+
+- Moved pawn bitboard extraction outside the benchmark inner loop for the pawn-structure micro-benchmark.
+- Split evaluation benchmarking into two explicit entries:
+    - `EvaluatePos` -> `LegacyEvaluatePos`
+    - `FastEvaluatePos` -> `EvaluatePos`
+
+This made benchmark labels reflect actual behavior and reduced accidental benchmark overhead.
+
+### 17.7 Main Debug/Comparison Path Updates
+
+`main.go`
+
+- `MODE=2` was used as the fast-vs-legacy evaluation comparison/debug path with fixed FEN checks during parity debugging.
+- This path was used repeatedly to reproduce and then verify evaluator parity.
+
+### 17.8 Performance Outcomes Seen Today
+
+Key measured outcomes discussed and observed today:
+
+- Fast evaluator path improved significantly over legacy eval path.
+- Search improvements from move-ordering refactor + null-move pruning yielded a large jump:
+    - Depth-7 node count reduced substantially
+    - Reported search throughput increased from roughly ~209k nodes/sec to around ~350k nodes/sec in your runs
+- Quiescence stand-pat ordering tweak reduced unnecessary move-generation work at many qsearch nodes.
+
+### 17.9 Important Reality Check for This Document
+
+Some earlier sections above still describe pre-change behavior (for example, references to full `sort.Slice` move ordering in minimax). Treat this section as the authoritative update for today's code state.
+
+When convenient, the best cleanup pass is to fold this section back into Sections 3, 4, 6, 11, and 14 so the whole document reads consistently end-to-end.
 depth like killers). Score moves by `history[from][to]` and use it to bias move ordering.
 Complements killers and iterative deepening history.
 

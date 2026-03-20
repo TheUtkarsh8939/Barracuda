@@ -39,12 +39,14 @@ func main() {
 		fmt.Printf("BENCH: nodes=%d, leafNodes=%d, quiescenceNodes=%d, evaluationDone=%d, positionUpdateCalls=%d, time=%v\n", nodesVisited, leafNodesVisited, quiescenceNodesVisited, evaluateFunctionCalls, positionUpdateCalls, elapsed)
 		return
 	} else if os.Getenv("MODE") == "2" {
-		fen, _ := chess.FEN("rnbqkbnr/pppp1pp1/7p/4P3/8/4P3/PPP2PPP/RNBQKBNR b KQkq - 0 3")
+		// rng := rand.New(rand.NewSource(42))
+		pst := initPST()
+		fen, _ := chess.FEN("8/pp2ppkp/2n2q2/2b1p3/2B1P3/2N5/PPP2PPP/2KR2R1 b - - 3 18")
 		testGame := chess.NewGame(fen)
-		bbRaw, _ := testGame.Position().MarshalBinary()
-		bb, _ := ExtractPawnBitboards(bbRaw)
-		doublePawnScore := pawnStructure(bb)
-		fmt.Println(doublePawnScore)
+		eval1 := LegacyEvaluatePos(testGame.Position(), &pst)
+		fmt.Printf("Evaluation: %d\n", eval1)
+		eval2 := EvaluatePos(testGame.Position(), &pst)
+		fmt.Printf("Fast Evaluation: %d\n", eval2)
 		return
 	} else if os.Getenv("MODE") == "3" {
 		fmt.Println("Benchmarking")

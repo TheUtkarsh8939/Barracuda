@@ -22,7 +22,7 @@ const deltaMargin = 200
 //
 // The depth parameter limits the quiescence search to prevent explosion
 // (positions with many forced captures could recurse very deeply otherwise).
-func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *[3][3][7][64]int) int {
+func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *PST) int {
 	quiescenceNodesVisited++
 	nodesVisited++
 	// Stand-pat evaluation: the score if we make no more captures ("stand pat").
@@ -32,8 +32,6 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 	if depth == 0 {
 		return stand_eval
 	}
-
-	vm := pos.ValidMoves()
 
 	if maximizer {
 		// Stand-pat beta cutoff: if the static eval already exceeds beta,
@@ -47,6 +45,8 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 			alpha = stand_eval
 		}
 
+		vm := pos.ValidMoves()
+
 		max_Eval := stand_eval
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
@@ -55,7 +55,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 				if move.HasTag(chess.Capture) {
 					victim := pos.Board().Piece(move.S2())
 					if victim.Type() != chess.NoPieceType {
-						if stand_eval+pieceValues[victim.Type()]+deltaMargin < alpha {
+						if stand_eval+legacyPieceValues[victim.Type()]+deltaMargin < alpha {
 							continue
 						}
 					}
@@ -85,6 +85,8 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 			beta = stand_eval
 		}
 
+		vm := pos.ValidMoves()
+
 		minEval := stand_eval
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
@@ -93,7 +95,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 				if move.HasTag(chess.Capture) {
 					victim := pos.Board().Piece(move.S2())
 					if victim.Type() != chess.NoPieceType {
-						if stand_eval-pieceValues[victim.Type()]-deltaMargin > beta {
+						if stand_eval-legacyPieceValues[victim.Type()]-deltaMargin > beta {
 							continue
 						}
 					}

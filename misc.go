@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"math/bits"
 
 	"github.com/corentings/chess/v2"
 )
@@ -83,4 +84,38 @@ func ExtractPawnBitboards(bbRaw []byte) (uint64, uint64) {
 	blackPawn := binary.LittleEndian.Uint64(bbRaw[blackPawnStart : blackPawnStart+8])
 
 	return whitePawn, blackPawn
+}
+
+// ExtractPieceBitboard extracts piece bitboards for every piece type and color from
+// the binary representation returned by position().MarshalBinary()
+// Returns a array of 12 uint64 bitboards in the order:
+// WhiteKing(0), WhiteQueen(1), WhiteRook(2), WhiteBishop(3), WhiteKnight(4),
+// WhitePawn(5), BlackKing(6), BlackQueen(7), BlackRook(8), BlackBishop(9),
+// BlackKnight(10), BlackPawn(11).
+func ExtractPieceBitboard(bbRaw []byte) [12]uint64 {
+	var pieceBitboards [12]uint64
+	for i := 0; i < 12; i++ {
+		start := i * 8
+		pieceBitboards[i] = binary.LittleEndian.Uint64(bbRaw[start : start+8])
+	}
+	return pieceBitboards
+}
+
+// Add pst via bitboard
+// Takes a 64 bit bitboard representing the positions of a certain piece type and color
+// and adds the corresponding PST values for those squares to the total evaluation score.
+// For example on a 16 bit bitboard 0110 0000 0000 0000, and pst [64]int{3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+// It would add pst[1] + pst[2] = 4 + 5 = 9 to the total evaluation score.
+// Returns the total PST score for the given bitboard and piece type/color.
+func AddPSTViaBitboard(bitboard uint64, pst *[64]int) int {
+	score := 0
+	for bitboard != 0 {
+		// MarshalBinary bitboards are mirrored by file within each rank (H1 as LSB),
+		// while PST and board square indexing use A1..H8. Convert with xor 7.
+		bbIdx := bits.TrailingZeros64(bitboard)
+		sq := bbIdx ^ 7
+		score += pst[sq]
+		bitboard &= bitboard - 1 // Clear lowest set bit.
+	}
+	return score
 }

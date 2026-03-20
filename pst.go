@@ -8,6 +8,8 @@ const (
 	pstEnd
 )
 
+type PST [3][3][7][64]int
+
 // mirrorBoard flips a piece-square table vertically so that Black's PST
 // is the mirror image of White's. This ensures both sides use equivalent
 // positional incentives relative to their own starting side of the board.
@@ -33,7 +35,7 @@ func fromA8ToA1(src [64]int) [64]int {
 	return mirrorBoard(src)
 }
 
-func setPhaseTables(tables *[3][3][7][64]int, phase int, whiteA8 [7][64]int) {
+func setPhaseTables(tables *PST, phase int, whiteA8 [7][64]int) {
 	for pt := chess.King; pt <= chess.Pawn; pt++ {
 		white := fromA8ToA1(whiteA8[pt])
 		tables[phase][chess.White][pt] = white
@@ -44,8 +46,8 @@ func setPhaseTables(tables *[3][3][7][64]int, phase int, whiteA8 [7][64]int) {
 // initPST initializes calibrated start/middlegame/endgame PST banks.
 // Layout: [Phase][Color][PieceType][Square]
 // Phase: 0=start, 1=middlegame, 2=endgame.
-func initPST() [3][3][7][64]int {
-	var tables [3][3][7][64]int
+func initPST() PST {
+	var tables PST
 
 	// Start game PST (Tomasz Michniewski simplified eval tables, A8..H1 orientation).
 	startWhite := [7][64]int{}
