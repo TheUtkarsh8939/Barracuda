@@ -303,15 +303,15 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 			// This quickly rejects moves that don't improve on alpha (or beta for black)
 			if isWhite {
 				score = minimax(child, depth-1, !isWhite, alpha, alpha+1, childHash, pst, true)
-				// If null-window search fails high, re-search with full window
+				// Null-window fail-high: re-search with full window.
 				if score > alpha && score < beta {
-					score = minimax(child, depth-1, !isWhite, score, beta, childHash, pst, true)
+					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
 				}
 			} else {
 				score = minimax(child, depth-1, !isWhite, beta-1, beta, childHash, pst, true)
-				// If null-window search fails low, re-search with full window
+				// Null-window fail-low: re-search with full window.
 				if score > alpha && score < beta {
-					score = minimax(child, depth-1, !isWhite, alpha, score, childHash, pst, true)
+					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
 				}
 			}
 		}
@@ -341,9 +341,8 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 
 	// Handle aspiration window failure: if score fell outside the original window, retry with full window
 	if aspirate {
-		if (isWhite && bestScore <= (prevScore-aspiratingWindowMargin)) ||
-			(!isWhite && bestScore >= (prevScore+aspiratingWindowMargin)) {
-			// Score failed low (Black) or high (White); re-search with full window
+		if bestScore <= alpha || bestScore >= beta {
+			// Score fell outside aspiration window; re-search with full window.
 			return rateAllMoves(position, depth, pst, isWhite, prevScore, false)
 		}
 	}
