@@ -42,8 +42,9 @@
 14. [Performance Notes & Optimization History](#14-performance-notes--optimization-history)
     - 14.1 Runtime Modes (`MODE=1..4`)
     - 14.2 Profiling Harness (`profiling.go`)
-15. [Known Gaps & What to Implement Next](#15-known-gaps--what-to-implement-next)
-16. [Build Instructions](#16-build-instructions)
+15. [Configuration: Centralized Tuning Constants](#15-configuration-centralized-tuning-constants)
+16. [Opening Book — `opening_handler.go`](#16-opening-book--opening_handlergo)
+17. [Build Instructions](#17-build-instructions)
 
 ---
 
@@ -603,8 +604,7 @@ inside the comparator. Moves are then sorted descending by score using `sort.Sli
 | Castling | +150 | King safety; also gets +200 root bonus in `rateAllMoves` |
 | Moves that give check | +100 | Forcing; usually narrows opponent options |
 
-*Sorting:* `sort.Slice` (Go's built-in introsort, O(n log n)) orders a `moveWithScore`
-slice by descending score.
+*Sorting:* `pickNextBestMove()` is a O(n) lookup that finds the heighest scored move, because of the move sorting, it is usually only 2-3 move before a beta cutoff occurs, so the O(n) cost is negligible compared to the O(n log n) cost of a full sort.
 
 **Principal Variation follow:** If a move matches the predicted continuation from the
 previously completed iterative deepening depth, it receives the highest ordering priority
@@ -1202,14 +1202,101 @@ When experimenting with optimizations:
 2. Run `MODE=1` benchmark to measure nodes/time impact
 3. Log successful tuning results in `learn.md` and commit changes
 
-## 16. Build Instructions
+## 16. Opening Book — `opening_handler.go`
+
+The engine uses `github.com/corentings/chess/v2/opening` (BookECO) to play known opening lines
+and avoid expensive search in the opening phase.
+
+### Overview
+
+```go
+func initBook() *opening.BookECO
+func findNextMove(moves []*chess.Move, book *opening.BookECO) *chess.Move
+func parsePGNMoves(pgn string) []string
+```
+
+**How it works:**
+
+1. **Initialize the book once at startup** (`initBook()`):
+   ```go
+   book := opening.NewBookECO()  // Loads ECO opening database
+   ```
+
+2. **Query for the next move** — pass all moves played so far:
+   ```go
+   nextMove := findNextMove(moveArray, book)
+   ```
+   
+   - `book.Possible(moves)` filters the opening database to lines matching the move history
+   - If matches exist, parse the opening's PGN notation into individual moves
+   - Return the move at index `len(moves)` (the next move after current history)
+   - Returns `nil` if no matching openings or if the book line has ended
+
+3. **Integration in main.go**: Before each search, check the opening book. If a move is found,
+   return it immediately without running `iterativeDeepening`:
+   
+   ```go
+   if len(moveArray) < 8 {  // Only book moves in early game
+       nextMove := findNextMove(moveArray, book)
+       if nextMove != nil {
+           fmt.Printf("bestmove %s\n", nextMove)
+           return  // Skip expensive search
+       }
+   }
+   iterativeDeepening(pos, depth, pst, isWhite)  // Fall back to search
+   ```
+
+### PGN Parser
+
+`parsePGNMoves(pgn string)` extracts individual moves from a PGN (Portable Game Notation) string:
+
+- Splits the PGN by whitespace
+- Skips move numbers (tokens ending with `.`, e.g., `1.`, `2.`)
+- Skips metadata and annotations
+- Returns a slice of move strings in algebraic notation (e.g., `["e2e4", "c7c5", "Nf3", ...]`)
+
+The parser handles both UCI-style moves (`e2e4`) and standard algebraic notation (`Nf3`, `O-O`).
+
+### API Details
+
+**`Opening` struct** (from `chess/v2/opening`):
+- `Opening.PGN()` → full PGN string of all moves in that opening
+- `Opening.Code()` → ECO code (e.g., `B20`)
+- `Opening.Title()` → human-readable opening name (e.g., `Sicilian Defense`)
+
+**`BookECO` methods:**
+- `BookECO.Possible(moves)` → `[]*Opening` — all openings matching the move history
+
+### Optimization Notes
+
+- **Early exit:** The engine only consults the book for the first 8 half-moves (4 full moves).
+  Beyond that, search is more reliable than book lines.
+- **No rematches:** Once a book move is found and played, the opening line is locked in for
+  subsequent moves. This ensures consistency with the stored line.
+- **Stateless:** `findNextMove` is purely functional — it takes the full move history and
+  returns the next move without side effects or mutable state.
+
+### Example
+
+Given a Sicilian Najdorf opening with moves `1.e4 c5 2.Nf3 e6`:
+
+```go
+moves := []*chess.Move{move1, move2}  // [e2e4, c7c5]
+book := initBook()
+
+nextMove := findNextMove(moves, book)
+// Returns: the move for 2.Nf3 (White's second move)
+```
+
+---
+
+## 17. Build Instructions
 
 ### Standard build
 
 ```powershell
 go build -o Barracuda.exe .
 ```
-
 ### Profile-Guided Optimization (PGO) build
 
 PGO lets the Go compiler inline and optimize hot paths based on a real CPU profile.

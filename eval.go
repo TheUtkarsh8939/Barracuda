@@ -93,7 +93,7 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 	// Primary fast evaluator: bitboard-driven material, PST, pawn structure, and king activity.
 	bbRaw, err := position.MarshalBinary()
 	if err != nil {
-		fmt.Errorf("Error in bitboard retrieval %w\n", err)
+		fmt.Printf("Error in bitboard retrieval %v\n", err)
 	}
 	// Extract pawn bitboards for pawn structure evaluation.
 	bitboards := ExtractPieceBitboard(bbRaw)
@@ -200,7 +200,7 @@ func LegacyEvaluatePos(position *chess.Position, pst *PST) int {
 	// Reference evaluator kept for parity checks and benchmarking.
 	bbRaw, err := position.MarshalBinary()
 	if err != nil {
-		fmt.Errorf("Error in bitboard retrieval %w\n", err)
+		fmt.Printf("Error in bitboard retrieval %v\n", err)
 	}
 	// Extract pawn bitboards for pawn structure evaluation.
 	wbb, bbb := ExtractPawnBitboards(bbRaw)

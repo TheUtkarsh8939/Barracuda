@@ -272,3 +272,22 @@ func fastChildHash(parent *chess.Position, child *chess.Position, move *chess.Mo
 
 	return h
 }
+
+// fastNullHash derives the child hash for a null move ("pass") from the parent hash.
+// In a null move no piece squares change; only side-to-move and state fields can change.
+func fastNullHash(parent *chess.Position, child *chess.Position, parentHash uint64) uint64 {
+	h := parentHash
+
+	// Side to move always flips on a null move.
+	h ^= fastHashTurnKey
+
+	// Castle rights usually stay unchanged, but keep this symmetric with normal hashing.
+	h ^= fastHashCastleKeys[fastCastleMask(parent.CastleRights())]
+	h ^= fastHashCastleKeys[fastCastleMask(child.CastleRights())]
+
+	// En passant is cleared or updated by the child position state.
+	h ^= fastEnPassantKey(parent)
+	h ^= fastEnPassantKey(child)
+
+	return h
+}

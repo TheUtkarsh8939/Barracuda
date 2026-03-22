@@ -113,13 +113,15 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 	// good enough to fail high/low, this node can often be pruned safely.
 	if allowNull && depth >= nullMoveMinDepth && hasNonPawnMaterial(position) {
 		nullPos := position.Update(nil)
-		nullHash := fastPosHash(nullPos)
+		nullHash := fastNullHash(position, nullPos, posHash)
 		if maximizer {
+			nullMovePrunes++
 			nullScore := minimax(nullPos, depth-1-nullMoveReduction, false, beta-1, beta, nullHash, pst, false)
 			if nullScore >= beta {
 				return nullScore
 			}
 		} else {
+			nullMovePrunes++
 			nullScore := minimax(nullPos, depth-1-nullMoveReduction, true, alpha, alpha+1, nullHash, pst, false)
 			if nullScore <= alpha {
 				return nullScore
@@ -161,6 +163,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst, true)
 				if score > alpha {
 					// Promising — confirm with a full-depth search.
+					lmrResearches++
 					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
 				}
 			} else {
@@ -207,6 +210,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst, true)
 				if score < beta {
 					// Promising — confirm with a full-depth search.
+					lmrResearches++
 					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
 				}
 			} else {
@@ -305,12 +309,14 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 				score = minimax(child, depth-1, !isWhite, alpha, alpha+1, childHash, pst, true)
 				// Null-window fail-high: re-search with full window.
 				if score > alpha && score < beta {
+					aspirationResearches++
 					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
 				}
 			} else {
 				score = minimax(child, depth-1, !isWhite, beta-1, beta, childHash, pst, true)
 				// Null-window fail-low: re-search with full window.
 				if score > alpha && score < beta {
+					aspirationResearches++
 					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
 				}
 			}

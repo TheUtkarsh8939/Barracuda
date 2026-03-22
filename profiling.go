@@ -118,7 +118,9 @@ func Benchmark() {
 	runBenchmark("fastChildHash", benchmarkCalls, func(_ int) {
 		benchUint64Sink ^= fastChildHash(position, child, move, rootHash)
 	})
-
+	runBenchmark("fastNullHash", benchmarkCalls, func(_ int) {
+		benchUint64Sink ^= fastNullHash(position, child, rootHash)
+	})
 	runBenchmark("ttLookup", benchmarkCalls, func(_ int) {
 		score, alpha, beta, ok := ttLookup(rootHash, 4, minScore, maxScore)
 		benchIntSink += score + alpha + beta

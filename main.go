@@ -15,7 +15,11 @@ var nodesVisited int = 0
 var leafNodesVisited int = 0       // Separate count for leaf nodes (quiescence and terminal positions) to analyze performance bottlenecks.
 var quiescenceNodesVisited int = 0 // Count of nodes visited specifically in quiescence search, to evaluate its contribution to total search time.
 var evaluateFunctionCalls int = 0  // Count of how many times the static evaluation function is called, to analyze its impact on performance.
+var aspirationResearches int = 0   // Count of how many times the search had to be restarted due to aspiration window failures, to evaluate the effectiveness of the aspiration window settings.
+var lmrResearches int = 0          // Count of how many times moves were reduced by LMR and then had to be re-searched at full depth, to analyze the effectiveness of LMR settings.
+var nullMovePrunes int = 0         // Count of how many times null-move pruning successfully pruned a node, to evaluate the effectiveness of null-move pruning settings.
 
+var moveArray []*chess.Move
 var stopSearch = make(chan bool, 1) // Buffered to avoid deadlocks when no search goroutine is waiting.
 
 func clearStopSignals() {
@@ -38,6 +42,7 @@ func requestStopSearch() {
 func applyMovesUCI(game *chess.Game, moveTokens []string) error {
 	for _, token := range moveTokens {
 		move, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), token)
+		moveArray = append(moveArray, move)
 		if err != nil {
 			return err
 		}
@@ -121,17 +126,16 @@ func main() {
 		startTime := time.Now()
 		iterativeDeepening(game.Position(), 7, &pst, isWhite)
 		elapsed := time.Since(startTime)
-		fmt.Printf("BENCH: nodes=%d, leafNodes=%d, quiescenceNodes=%d, evaluationDone=%d, positionUpdateCalls=%d, time=%v\n", nodesVisited, leafNodesVisited, quiescenceNodesVisited, evaluateFunctionCalls, positionUpdateCalls, elapsed)
+		fmt.Printf("BENCH: nodes=%d, leafNodes=%d, quiescenceNodes=%d, evaluationDone=%d, \npositionUpdateCalls=%d, LMRresearches=%d, aspirationResearches=%d, nullMovePrunes=%d time=%v\n", nodesVisited, leafNodesVisited, quiescenceNodesVisited, evaluateFunctionCalls, positionUpdateCalls, lmrResearches, aspirationResearches, nullMovePrunes, elapsed)
 		return
 	} else if os.Getenv("MODE") == "2" {
-		// rng := rand.New(rand.NewSource(42))
-		pst := initPST()
-		fen, _ := chess.FEN("8/pp2ppkp/2n2q2/2b1p3/2B1P3/2N5/PPP2PPP/2KR2R1 b - - 3 18")
-		testGame := chess.NewGame(fen)
-		eval1 := LegacyEvaluatePos(testGame.Position(), &pst)
-		fmt.Printf("Evaluation: %d\n", eval1)
-		eval2 := EvaluatePos(testGame.Position(), &pst)
-		fmt.Printf("Fast Evaluation: %d\n", eval2)
+		//TEST OPENING BOOK
+		game := chess.NewGame()
+		applyMovesUCI(game, []string{"c2c4"})
+		moves := game.Moves()
+		book := initBook()
+		nextMove := findNextMove(moves, book)
+		fmt.Println(nextMove)
 		return
 	} else if os.Getenv("MODE") == "3" {
 		fmt.Println("Benchmarking")
@@ -149,8 +153,11 @@ func main() {
 		elapsedTime := time.Since(startTime)
 
 		fmt.Printf("BENCH: time=%v\n", elapsedTime)
-		fmt.Printf("BENCH: timesFunctionRan=%d\n", 1000000)
-		fmt.Printf("BENCH: evaluationDone=%d\n", evaluateFunctionCalls)
+		fmt.Printf("timesFunctionRan=%d\n", 1000000)
+		fmt.Printf("evaluationDone=%d\n", evaluateFunctionCalls)
+		fmt.Printf("LMRresearches=%d\n", lmrResearches)
+		fmt.Printf("AspirationResearches=%d\n", aspirationResearches)
+		fmt.Printf("nullMovePrunes=%d\n", nullMovePrunes)
 		return
 	} else if os.Getenv("MODE") == "4" {
 		Benchmark()
@@ -163,7 +170,7 @@ func main() {
 	// Initialize a new chess game and the piece-square table (PST) for evaluation.
 	game := chess.NewGame()
 	pst := initPST()
-
+	book := initBook() // Initialize the opening book once at startup, since it can be reused across multiple searches and is expensive to load.
 	// Print engine identification information.
 	fmt.Println("id name Barracuda")
 	fmt.Println("id author Utkarsh Chandel")
@@ -206,6 +213,18 @@ func main() {
 			options := parseGoCmd(command)
 			searching = true
 			go func(pos *chess.Position, depth uint8, sideIsWhite bool) {
+				if len(moveArray) < 8 {
+					nextMove := findNextMove(moveArray, book)
+					if nextMove != nil {
+						fmt.Printf("info string found book move %s\n", nextMove)
+						fmt.Printf("bestmove %s\n", nextMove)
+						select {
+						case searchDone <- struct{}{}:
+						default:
+						}
+						return
+					}
+				}
 				iterativeDeepening(pos, depth, &pst, sideIsWhite)
 				select {
 				case searchDone <- struct{}{}:
@@ -221,11 +240,7 @@ func main() {
 			requestStopSearch()
 		} else if command == "debug" {
 			//Custom Instructions LOL
-			fen, _ := chess.FEN("1rbqkbnr/pppppppp/8/8/1n1P4/2N1P3/PPP1NPPP/R1BQKB1R b KQk d3 0 4")
-			testGame := chess.NewGame(fen)
-
-			fmt.Println(EvaluatePos(testGame.Position(), &pst))
-			fmt.Println(testGame.Position().Board().Draw())
+			fmt.Println(moveArray)
 		}
 	}
 }
