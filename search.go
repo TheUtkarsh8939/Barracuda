@@ -93,8 +93,6 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 	// Terminal node: game is over (checkmate or stalemate). Evaluate and cache.
 	if len(movesRaw) == 0 {
 		eval := quiescence_search(position, alpha, beta, maximizer, quiescenceDepth, pst)
-		// eval := 0 //Temporarily disabled to calculate minimax overhead without eval time included.
-		// eval := EvaluatePos(position, pst) //Temporarily disabled to calculate minimax overhead without eval time included.
 
 		ttStore(posHash, eval, 255, ttBoundExact)
 		return eval
@@ -260,8 +258,8 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 	bestScore := minScore
 	alpha := minScore
 	beta := maxScore
-	aspirationAlpha := alpha
-	aspirationBeta := beta
+	aspirationAlpha := minScore
+	aspirationBeta := maxScore
 
 	if !isWhite {
 		bestScore = maxScore
