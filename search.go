@@ -135,8 +135,8 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 
 	moveList := make([]moveWithScore, len(movesRaw))
 	pvMove, hasPVMove := pvPredictedMove(posHash)
-	for i, moveObj := range movesRaw {
-		m := &moveObj
+	for i := range movesRaw {
+		m := &movesRaw[i]
 		score := EvaluateMove(m, position, depth)
 		if hasPVMove && pvMove == (Move{m.S1(), m.S2()}) {
 			score += pvFollowBonus
@@ -281,8 +281,8 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 	movesRaw := position.ValidMoves()
 	moveList := make([]moveWithScore, len(movesRaw))
 	pvMove, hasPVMove := pvPredictedMove(rootHash)
-	for i, moveObj := range movesRaw {
-		m := &moveObj
+	for i := range movesRaw {
+		m := &movesRaw[i]
 		score := EvaluateMove(m, position, depth)
 		if hasPVMove && pvMove == (Move{m.S1(), m.S2()}) {
 			score += pvFollowBonus
