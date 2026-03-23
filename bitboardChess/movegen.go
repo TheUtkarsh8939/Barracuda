@@ -23,7 +23,7 @@ const noEnPassant uint8 = 64
 // Hot-path tuning flags.
 // Setting this to false skips per-move post-annotation for check flags,
 // which removes an expensive extra pass over generated moves.
-const annotateChecksInMoveGen = false
+const annotateChecksInMoveGen = true
 const useHybridMoveGeneration = false
 
 var (
