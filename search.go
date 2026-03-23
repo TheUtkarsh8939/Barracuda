@@ -261,6 +261,8 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 	bestScore := minScore
 	alpha := minScore
 	beta := maxScore
+	aspirationAlpha := alpha
+	aspirationBeta := beta
 
 	if !isWhite {
 		bestScore = maxScore
@@ -269,13 +271,10 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 	// Aspiration window: narrow the window if we have trust in the previous score.
 	aspirate := useAspiration && depth >= aspirationMinDepth
 	if aspirate {
-		if isWhite {
-			alpha = prevScore - aspiratingWindowMargin
-			beta = prevScore + aspiratingWindowMargin
-		} else {
-			alpha = prevScore - aspiratingWindowMargin
-			beta = prevScore + aspiratingWindowMargin
-		}
+		alpha = prevScore - aspiratingWindowMargin
+		beta = prevScore + aspiratingWindowMargin
+		aspirationAlpha = alpha
+		aspirationBeta = beta
 	}
 
 	movesRaw := position.ValidMoves()
@@ -348,7 +347,7 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 
 	// Handle aspiration window failure: if score fell outside the original window, retry with full window
 	if aspirate {
-		if bestScore <= alpha || bestScore >= beta {
+		if bestScore <= aspirationAlpha || bestScore >= aspirationBeta {
 			// Score fell outside aspiration window; re-search with full window.
 			return rateAllMoves(position, depth, pst, isWhite, prevScore, false)
 		}
