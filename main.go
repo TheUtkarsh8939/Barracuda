@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	chess "github.com/corentings/chess/v2"
+	chess "github.com/TheUtkarsh8939/bitboardChess"
 )
 
 // Global counters used by benchmark modes and UCI info output.

@@ -1,7 +1,7 @@
 package main
 
 import (
-	chess "github.com/corentings/chess/v2"
+	chess "github.com/TheUtkarsh8939/bitboardChess"
 )
 
 // quiescence_search extends the search beyond the normal depth limit, but only for
