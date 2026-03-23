@@ -20,6 +20,7 @@ var lastBestMoves = make(map[Move]bool)
 type moveWithScore struct {
 	move  *chess.Move
 	score int
+	// tie is a deterministic tie-breaker for stable move ordering across backends.
 	tie   int
 }
 
@@ -62,6 +63,8 @@ func compatibilityPieceOrder(pieceType chess.PieceType) int {
 func compatibilityMoveTieBreakKey(position *chess.Position, move *chess.Move) int {
 	p := position.Board().Piece(move.S1())
 	order := compatibilityPieceOrder(p.Type())
+	// Encode as [piece-order:3+ bits][from:8 bits][to:8 bits][promo:2+ bits].
+	// Lower key wins when move ordering scores are equal.
 	return (order << 16) | (int(move.S1()) << 8) | (int(move.S2()) << 2) | int(move.Promo())
 }
 
