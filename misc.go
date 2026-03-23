@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"math/bits"
 
-	chess "github.com/TheUtkarsh8939/bitboardChess"
+	chess "github.com/corentings/chess/v2"
 )
 
 // Move is a lightweight representation of a chess move (from-square, to-square).

@@ -57,7 +57,7 @@ const (
 	// aspirationMargin is the ±cp band around the previous iteration's score.
 	// Searches that fail outside this band are retried with full window [minScore, maxScore].
 	// Typical values are 15-50; higher values reduce re-searches but use wider windows.
-	aspiratingWindowMargin = 17
+	aspiratingWindowMargin = 30
 
 	// aspirationMinDepth is the minimum depth at which aspiration windows are applied.
 	// Shallower searches have less predictive value from previous iteration.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	chess "github.com/TheUtkarsh8939/bitboardChess"
+	chess "github.com/corentings/chess/v2"
 )
 
 // positionUpdateCalls is a debug/benchmark counter for Update() calls during search.

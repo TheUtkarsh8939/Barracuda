@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"time"
 
-	chess "github.com/TheUtkarsh8939/bitboardChess"
+	chess "github.com/corentings/chess/v2"
 )
 
 // Sink variables make benchmark results observable so the compiler cannot optimize calls away.

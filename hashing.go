@@ -16,7 +16,7 @@
 // via fastHashPieceByID, avoiding Color() and Type() method calls in the hot path.
 package main
 
-import chess "github.com/TheUtkarsh8939/bitboardChess"
+import chess "github.com/corentings/chess/v2"
 
 // fastHashPieceKeys[color][pieceType][square] — intermediate key layout used during init.
 // Not used in the hot path; exists so fastHashPieceByID can be derived from it.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math/bits"
 
-	chess "github.com/TheUtkarsh8939/bitboardChess"
+	chess "github.com/corentings/chess/v2"
 )
 
 // lastTotalMaterial tracks non-king material used by phase interpolation.
