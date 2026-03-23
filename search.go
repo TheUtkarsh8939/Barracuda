@@ -92,8 +92,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 
 	// Terminal node: game is over (checkmate or stalemate). Evaluate and cache.
 	if len(movesRaw) == 0 {
-
-		eval := -99999
+		eval := quiescence_search(position, alpha, beta, maximizer, quiescenceDepth, pst)
 		// eval := 0 //Temporarily disabled to calculate minimax overhead without eval time included.
 		// eval := EvaluatePos(position, pst) //Temporarily disabled to calculate minimax overhead without eval time included.
 
