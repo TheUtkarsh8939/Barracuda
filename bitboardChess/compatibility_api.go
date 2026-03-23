@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -334,7 +335,26 @@ func (p *Position) Turn() Color {
 }
 
 func (p *Position) ValidMoves() []Move {
-	return GenerateValidMoves(p.board)
+	moves := GenerateValidMoves(p.board)
+	// Preserve legacy corentings/chess move ordering semantics to keep search
+	// behavior (PVS/LMR cutoffs and aspiration re-search profile) stable.
+	// Legacy order iterates piece types K,Q,R,B,N,P, then source square asc,
+	// then destination square asc.
+	sort.Slice(moves, func(i, j int) bool {
+		a := moves[i]
+		b := moves[j]
+		if a.PieceType != b.PieceType {
+			return a.PieceType > b.PieceType
+		}
+		if a.From != b.From {
+			return a.From < b.From
+		}
+		if a.To != b.To {
+			return a.To < b.To
+		}
+		return a.promoteTo < b.promoteTo
+	})
+	return moves
 }
 
 func (p *Position) Update(move *Move) *Position {
