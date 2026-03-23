@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/corentings/chess/v2"
+	chess "github.com/TheUtkarsh8939/bitboardChess"
 )
 
 // positionUpdateCalls is a debug/benchmark counter for Update() calls during search.
@@ -85,11 +85,15 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		alpha = newAlpha
 		beta = newBeta
 	}
+	// Generate and score all legal moves for sorting.
+	// Good move ordering is critical: the sooner we find a strong move,
+	// the more branches alpha-beta can prune.
+	movesRaw := position.ValidMoves()
 
 	// Terminal node: game is over (checkmate or stalemate). Evaluate and cache.
-	if position.Status() != chess.NoMethod {
+	if len(movesRaw) == 0 {
 
-		eval := quiescence_search(position, alpha, beta, maximizer, quiescenceDepth, pst)
+		eval := -99999
 		// eval := 0 //Temporarily disabled to calculate minimax overhead without eval time included.
 		// eval := EvaluatePos(position, pst) //Temporarily disabled to calculate minimax overhead without eval time included.
 
@@ -129,10 +133,6 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		}
 	}
 
-	// Generate and score all legal moves for sorting.
-	// Good move ordering is critical: the sooner we find a strong move,
-	// the more branches alpha-beta can prune.
-	movesRaw := position.ValidMoves()
 	moveList := make([]moveWithScore, len(movesRaw))
 	pvMove, hasPVMove := pvPredictedMove(posHash)
 	for i, moveObj := range movesRaw {
@@ -305,6 +305,7 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 		} else {
 			// Non-principal moves: use null-window search first
 			// This quickly rejects moves that don't improve on alpha (or beta for black)
+
 			if isWhite {
 				score = minimax(child, depth-1, !isWhite, alpha, alpha+1, childHash, pst, true)
 				// Null-window fail-high: re-search with full window.
@@ -412,4 +413,31 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 	lastBestMoves = make(map[Move]bool)
 	clearKillerTable()
 	clearPV()
+}
+
+// lmrMinimax is a variant of Minimax function that wraps around the main minimax and applies Late Move Reduction (LMR) to deeper nodes.
+// It is added to be used on root searches
+func lmrMinimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, posHash uint64, pst *PST, allowNull bool, moveIdx int) int {
+	nodesVisited++
+	score := 0
+	if moveIdx >= lmrMoveIndex+6 && depth >= lmrMinDepth+2 {
+		if maximizer {
+			score = minimax(position, depth-1, maximizer, alpha, beta, posHash, pst, allowNull)
+			if score > alpha {
+				// Promising — confirm with a full-depth search.
+				lmrResearches++
+				score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull)
+			}
+		} else {
+			score = minimax(position, depth-1, maximizer, alpha, beta, posHash, pst, allowNull)
+			if score < beta {
+				// Promising — confirm with a full-depth search.
+				lmrResearches++
+				score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull)
+			}
+		}
+	} else {
+		score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull)
+	}
+	return score
 }

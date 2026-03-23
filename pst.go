@@ -1,6 +1,6 @@
 package main
 
-import "github.com/corentings/chess/v2"
+import chess "github.com/TheUtkarsh8939/bitboardChess"
 
 type PST [3][3][7][64]int
 

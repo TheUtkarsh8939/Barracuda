@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/corentings/chess/v2"
+	chess "github.com/TheUtkarsh8939/bitboardChess"
 )
 
 // Global counters used by benchmark modes and UCI info output.
@@ -19,7 +19,7 @@ var aspirationResearches int = 0   // Count of how many times the search had to 
 var lmrResearches int = 0          // Count of how many times moves were reduced by LMR and then had to be re-searched at full depth, to analyze the effectiveness of LMR settings.
 var nullMovePrunes int = 0         // Count of how many times null-move pruning successfully pruned a node, to evaluate the effectiveness of null-move pruning settings.
 
-var moveArray []*chess.Move
+var moveArray []string
 var stopSearch = make(chan bool, 1) // Buffered to avoid deadlocks when no search goroutine is waiting.
 
 func clearStopSignals() {
@@ -42,13 +42,13 @@ func requestStopSearch() {
 func applyMovesUCI(game *chess.Game, moveTokens []string) error {
 	for _, token := range moveTokens {
 		move, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), token)
-		moveArray = append(moveArray, move)
 		if err != nil {
 			return err
 		}
 		if err := game.Move(move, &chess.PushMoveOptions{}); err != nil {
 			return err
 		}
+		moveArray = append(moveArray, token)
 	}
 	return nil
 }
@@ -61,6 +61,7 @@ func setPositionFromCommand(game **chess.Game, command string) error {
 
 	if tokens[1] == "startpos" {
 		g := chess.NewGame()
+		moveArray = nil
 		movesIdx := -1
 		for i := 2; i < len(tokens); i++ {
 			if tokens[i] == "moves" {
@@ -87,6 +88,7 @@ func setPositionFromCommand(game **chess.Game, command string) error {
 			return err
 		}
 		g := chess.NewGame(fen)
+		moveArray = nil
 		movesIdx := -1
 		for i := 8; i < len(tokens); i++ {
 			if tokens[i] == "moves" {
@@ -132,9 +134,8 @@ func main() {
 		//TEST OPENING BOOK
 		game := chess.NewGame()
 		applyMovesUCI(game, []string{"c2c4"})
-		moves := game.Moves()
 		book := initBook()
-		nextMove := findNextMove(moves, book)
+		nextMove := findNextMove(moveArray, book)
 		fmt.Println(nextMove)
 		return
 	} else if os.Getenv("MODE") == "3" {
@@ -215,7 +216,7 @@ func main() {
 			go func(pos *chess.Position, depth uint8, sideIsWhite bool) {
 				if len(moveArray) < 8 {
 					nextMove := findNextMove(moveArray, book)
-					if nextMove != nil {
+					if nextMove != "" {
 						fmt.Printf("info string found book move %s\n", nextMove)
 						fmt.Printf("bestmove %s\n", nextMove)
 						select {

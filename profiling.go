@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/corentings/chess/v2"
+	chess "github.com/TheUtkarsh8939/bitboardChess"
 )
 
 // Sink variables make benchmark results observable so the compiler cannot optimize calls away.
@@ -91,6 +91,10 @@ func Benchmark() {
 	child := position.Update(move)
 	bb, _ := position.MarshalBinary()
 	wbb, _ := ExtractPawnBitboards(bb)
+	runBenchmark("MarshalBinary", benchmarkCalls, func(_ int) {
+		bb, _ = position.MarshalBinary()
+
+	})
 	runBenchmark("PawnStructure", benchmarkCalls, func(_ int) {
 		benchIntSink += pawnStructure(wbb)
 	})

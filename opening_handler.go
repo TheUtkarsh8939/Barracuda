@@ -33,10 +33,31 @@ func parsePGNMoves(pgn string) []string {
 	return moves
 }
 
-func findNextMove(moves []*chess.Move, book *opening.BookECO) *chess.Move {
+func buildLegacyMovesFromUCI(uciMoves []string) ([]*chess.Move, error) {
+	game := chess.NewGame()
+	legacyMoves := make([]*chess.Move, 0, len(uciMoves))
+	for _, token := range uciMoves {
+		mv, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), token)
+		if err != nil {
+			return nil, err
+		}
+		legacyMoves = append(legacyMoves, mv)
+		if err := game.Move(mv, &chess.PushMoveOptions{}); err != nil {
+			return nil, err
+		}
+	}
+	return legacyMoves, nil
+}
+
+func findNextMove(uciMoves []string, book *opening.BookECO) string {
+	moves, err := buildLegacyMovesFromUCI(uciMoves)
+	if err != nil {
+		return ""
+	}
+
 	openings := book.Possible(moves)
 	if len(openings) == 0 {
-		return nil
+		return ""
 	}
 
 	// Loop through all matching openings to find the next move
@@ -58,11 +79,11 @@ func findNextMove(moves []*chess.Move, book *opening.BookECO) *chess.Move {
 			nextMoveStr := pgnMoves[len(moves)]
 			moveObj, err := chess.AlgebraicNotation{}.Decode(game.Position(), nextMoveStr)
 			if err == nil {
-				return moveObj
+				return moveObj.String()
 			}
 		}
 	}
 
 	// No valid next move found in any opening
-	return nil
+	return ""
 }

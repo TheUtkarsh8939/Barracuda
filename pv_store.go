@@ -20,7 +20,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/corentings/chess/v2"
+	chess "github.com/TheUtkarsh8939/bitboardChess"
 )
 
 // pvEntry stores the best move found for a position at a given depth.

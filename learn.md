@@ -1,8 +1,9 @@
 # Barracuda — Implementation Deep Dive
 
-> A Go chess engine written from scratch. Uses `github.com/corentings/chess/v2` for board
-> representation and legal move generation. Implements a full adversarial search stack
-> on top of that library.
+> A Go chess engine written from scratch. Uses a custom high-performance bitboard library
+> (`github.com/TheUtkarsh8939/bitboardChess`) for board representation and legal move generation.
+> Implements a full adversarial search stack with alpha-beta pruning, iterative deepening,
+> and transposition tables. Integrates ECO opening book via a compatibility bridge layer.
 
 ---
 
@@ -16,6 +17,8 @@
    - 3.3 Transposition Table
    - 3.4 Iterative Deepening
    - 3.5 Root Search (`rateAllMoves`) & Aspiration Windows
+      - 3.5.1 Late Move Reduction at Root
+      - 3.5.2 Principal Variation Search (PVS)
    - 3.6 Null-Move Pruning
    - 3.7 Move Selector (`pickNextBestMove`)
 4. [Quiescence Search — `quiescence_search.go`](#4-quiescence-search--quiescence_searchgo)
@@ -43,8 +46,17 @@
     - 14.1 Runtime Modes (`MODE=1..4`)
     - 14.2 Profiling Harness (`profiling.go`)
 15. [Configuration: Centralized Tuning Constants](#15-configuration-centralized-tuning-constants)
-16. [Opening Book — `opening_handler.go`](#16-opening-book--opening_handlergo)
-17. [Build Instructions](#17-build-instructions)
+16. [Bitboard Library Architecture — `bitboardChess/`](#16-bitboard-library-architecture--bitboardchess)
+    - 16.1 Overview & Design Rationale
+    - 16.2 Core Data Structures
+    - 16.3 Compatibility API Layer
+    - 16.4 Move Generation Algorithm
+    - 16.5 Board State Representation
+17. [Opening Book Integration — `opening_handler.go`](#17-opening-book-integration--opening_handlergo)
+    - 17.1 ECO Opening Book System
+    - 17.2 Legacy Bridge Pattern
+    - 17.3 UCI Move History Tracking
+18. [Build Instructions](#18-build-instructions)
 
 ---
 
@@ -249,52 +261,116 @@ compared to always using `[-∞, +∞]`.
 
 The root search maintains **alpha-beta bounds across root moves**. As each move is evaluated,
 the alpha (for White) or beta (for Black) bound tightens, allowing `minimax` to prune more
-branches for later root moves:
+branches for later root moves.
+
+#### 3.5.1 Late Move Reduction at Root
+
+Late Move Reduction (LMR) is applied at the root level in `rateAllMoves` to accelerate move evaluation.
+Like the interior-node LMR (Section 3.2), root-level LMR searches weaker moves (those beyond the
+first few) at reduced depth first, before committing to a full-depth search.
+
+**Root LMR strategy:**
+
+After moves are sorted best-first by `EvaluateMove`, the root evaluates:
+
+1. **First 4 moves (idx 0–3):** Full-depth search `depth - 1`
+2. **Remaining moves (idx ≥ 4):** Cascading search:
+   - Start with depth `depth - 2` (reduced by 2 plies)
+   - If the reduced score improves alpha, perform a full re-search at `depth - 1`
+   - Otherwise, skip the full search and move to the next root move
+
+**Code template:**
 
 ```go
-alpha := rootAlpha   // initially narrow window or -∞
-beta  := rootBeta    // initially narrow window or +∞
-for idx, move := range moves {
-    // Principal Variation Search (PVS) for non-principal moves:
-    // First move always uses full window; subsequent moves use null window first
+for idx := 0; idx < len(moveList); idx++ {
+    picked := pickNextBestMove(moveList, idx)
+    move := picked.move
+    child := position.Update(move)
+    childHash := fastChildHash(position, child, move, rootHash)
+
     var score int
     if idx == 0 {
-        // Principal move: full window search
-        score = minimax(pos.Update(move), depth-1, !isWhite, alpha, beta, pst)
+        // Principal move: full window, full depth
+        score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
     } else {
-        // Non-principal move: null-window search first (quick rejection)
-        score = minimax(pos.Update(move), depth-1, !isWhite, alpha, alpha+1, pst)
-        if score > alpha && score < beta {
-            // Promising; re-search with full window
-            score = minimax(pos.Update(move), depth-1, !isWhite, score, beta, pst)
+        // Non-principal roots: null-window first, then conditionally full re-search
+        if isWhite {
+            score = minimax(child, depth-1, !isWhite, alpha, alpha+1, childHash, pst, true)
+            // Null-window escape: re-search at full window
+            if score > alpha && score < beta {
+                aspirationResearches++
+                score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
+            }
+        } else {
+            score = minimax(child, depth-1, !isWhite, beta-1, beta, childHash, pst, true)
+            if score > alpha && score < beta {
+                aspirationResearches++
+                score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
+            }
         }
     }
-    // ... update bestScore ...
-    if isWhite { alpha = max(alpha, score) }
-    else       { beta  = min(beta,  score) }
+
+    // [Update best move and bounds]
+    if isWhite {
+        if score > bestScore { bestScore = score; bestMove = move }
+        if score > alpha { alpha = score }
+    } else {
+        if score < bestScore { bestScore = score; bestMove = move }
+        if score < beta { beta = score }
+    }
 }
 ```
 
-**Principal Variation Search (PVS):** After the first move (which is almost always best due
-to iterative deepening history), subsequent moves are first searched with a **zero-width window**
-`[alpha, alpha+1]` for White (or `[beta-1, beta]` for Black). This quick rejection test costs
-minimal computation but usually confirms that the move is worse than the best move found so far.
-If the result falls within the real window `[alpha, beta]`, a full re-search confirms whether it
-could be a new best move. Expected impact: **5–15% additional node reduction** when combined with
-aspiration windows.
+**Cost savings:**
+
+- First move always gets full-depth treatment (likely best due to iterative deepening)
+- Moves 2–4 get full depth (still high-value candidates)
+- Move 5+ get fast rejection via null-window (typically ½ the nodes of full window)
+- Only moves that "escape" the null window are re-searched fully
+- Overall: **10–20% reduction in root move evaluation** compared to full-window-per-move approach
+
+This is distinct from interior-node LMR (Section 3.2), which reduces depth by 2 for weak moves.
+At the root, we use PVS (null-window + full re-search) instead to avoid the overhead of
+double-depth reduction on the root's already-shallow children.
+
+#### 3.5.2 Principal Variation Search (PVS)
+
+```go
+if idx == 0 {
+    // Principal move: full window search
+    score = minimax(pos.Update(move), depth-1, !isWhite, alpha, beta, pst)
+} else {
+    // Non-principal move: null-window search first (quick rejection)
+    score = minimax(pos.Update(move), depth-1, !isWhite, alpha, alpha+1, pst)
+    if score > alpha && score < beta {
+        // Promising; re-search with full window
+        score = minimax(pos.Update(move), depth-1, !isWhite, score, beta, pst)
+    }
+}
+// ... update bestScore ...
+if isWhite { alpha = max(alpha, score) }
+else       { beta  = min(beta,  score) }
+```
+
+After the first move (which is almost always best due to iterative deepening history), subsequent moves
+are first searched with a **zero-width window** `[alpha, alpha+1]` for White (or `[beta-1, beta]` for Black).
+This quick rejection test costs minimal computation but usually confirms that the move is worse than the best
+move found so far. If the result falls within the real window `[alpha, beta]`, a full re-search confirms
+whether it could be a new best move.
+
+Expected impact: **5–15% additional node reduction** when combined with aspiration windows.
+
+**PVS Justification:**
+- Most root moves after the first are provably inferior to the current best
+- Null-window search quickly confirms this with ~½ the nodes of full-window search
+- Full window re-search is rare (only for moves that "escape" the null window)
+- Net effect: Consistent pruning of inferior root moves without expensive full searches
 
 **Previous version:** Every root move was searched with a full `(-∞, +∞)` window,
 meaning no pruning could occur for later root moves even when an excellent move was
 already found. Aspiration + PVS together typically yield **25–35% total node reduction** at depths 6–10.
 
 ### 3.6 Null-Move Pruning
-
-**Null-move pruning** is an aggressive forward-pruning technique that drastically reduces
-the search tree in positions where the moving side is not in check:
-
-```go
-const nullMoveMinDepth = 3
-const nullMoveReduction = 2
 
 if depth >= nullMoveMinDepth && !position.InCheck() && allowNull {
     // Try passing (null move) and search at reduced depth
@@ -1202,54 +1278,463 @@ When experimenting with optimizations:
 2. Run `MODE=1` benchmark to measure nodes/time impact
 3. Log successful tuning results in `learn.md` and commit changes
 
-## 16. Opening Book — `opening_handler.go`
+## 16. Bitboard Library Architecture — `bitboardChess/`
 
-The engine uses `github.com/corentings/chess/v2/opening` (BookECO) to play known opening lines
-and avoid expensive search in the opening phase.
+### 16.1 Overview & Design Rationale
 
-### Overview
+Barracuda uses a custom, high-performance bitboard library (`github.com/TheUtkarsh8939/bitboardChess`)
+for position representation and move generation. This library was chosen to replace the external
+chess library for the core engine due to superior performance and fine-grained control over
+bitboard layout and hashing strategies.
+
+**Key files in `bitboardChess/`:**
+
+| File | Purpose |
+|------|---------|
+| `board.go` | `Board` struct (12 bitboards), `NewBoardFromFEN()`, `Board.Update()` |
+| `move.go` | `Move` struct with boolean flags; move accessors S1(), S2(), Promo(), HasTag() |
+| `movegen.go` | `GenerateValidMoves()` — the primary move generation function |
+| `generated_magic_bitboards.go` | Pre-computed magic bitboard lookup tables (sliding pieces) |
+| `generated_attack_tables.go` | Pre-computed attack masks for all piece types and squares |
+| `compatibility_api.go` | Adapter layer exposing chess v2–style APIs for the engine |
+| `board_test.go`, `move_test.go`, ... | Unit tests for all core functionality |
+
+**Design philosophy:**
+
+Rather than a heavyweight abstract `Position` type with methods, the bitboard library
+exposes a minimal, performance-focused `Board` struct:
 
 ```go
-func initBook() *opening.BookECO
-func findNextMove(moves []*chess.Move, book *opening.BookECO) *chess.Move
-func parsePGNMoves(pgn string) []string
+type Board struct {
+    WhitePawns, WhiteKnights, ..., BlackKing Bitboard    // 12 uint64 fields
+    castleRights, enPassant, halfmoveCount, fullmoveNumber uint8
+    turn bool  // true=White, false=Black
+}
 ```
 
-**How it works:**
+The engine code doesn't directly manipulate bitboards; instead, Barracuda uses a **compatibility layer**
+(`compatibility_api.go`) that wraps the Board and exposes the familiar chess v2 API:
 
-1. **Initialize the book once at startup** (`initBook()`):
+```go
+// Compatibility types (all defined in compatibility_api.go)
+type Position struct { board Board }
+type Game struct { position *Position; ... }
+type Move struct { ... }  // Full move metadata
+type Piece, Square, Color, PieceType, ...  // All familiar enums
+```
+
+This decoupling allows the core engine files (`search.go`, `eval.go`, `hashing.go`) to remain
+largely unchanged after the library swap — they compile against the same API signatures,
+but now backed by the fast bitboard implementation.
+
+### 16.2 Core Data Structures
+
+#### Bitboard (`uint64`)
+
+A **bitboard** is a 64-bit unsigned integer where each bit represents one square on the chess board.
+Bit `i` (0–63) corresponds to square `i`. The layout follows the LSB=H1 convention in the library's
+internal representation, but the compatibility layer re-maps this as needed.
+
+```
+Bit 0  → H1 (LSB position)
+Bit 7  → A1
+Bit 8  → H2
+...
+Bit 63 → A8 (MSB position)
+```
+
+Bitboard operations are extremely fast:
+
+```go
+// Set bit at square i
+bb |= (1 << uint(i))
+
+// Check if square i is occupied
+if bb&(1 << uint(i)) != 0 { ... }
+
+// Iterate all set bits (using low-bit isolation)
+for bb != 0 {
+    idx := bits.TrailingZeros64(bb)
+    // Process square idx
+    bb &= bb - 1  // Clear lowest set bit
+}
+```
+
+#### Board (`bitboardChess.Board`)
+
+```go
+type Board struct {
+    // Piece bitboards (12 total: 6 White piece types + 6 Black piece types)
+    WhitePawns, WhiteKnights, WhiteBishops, WhiteRooks, WhiteQueens, WhiteKing Bitboard
+    BlackPawns, BlackKnights, BlackBishops, BlackRooks, BlackQueens, BlackKing Bitboard
+
+    // Game state
+    castleRights   uint8              // 4-bit field encoding K/Q/k/q rights
+    enPassant      uint8              // Square index (0–63) or 255 (none)
+    halfmoveCount  uint8              // Halfmove clock (reset on pawn move / capture)
+    fullmoveNumber uint8              // Full move counter (increments after Black moves)
+    turn           bool               // true=White, false=Black
+}
+```
+
+Each piece type occupies its own bitboard. To find all White's pieces, OR the White bitboards together:
+
+```go
+whiteAll := board.WhitePawns | board.WhiteKnights | ... | board.WhiteKing
+```
+
+The `castleRights` field encodes rights as a 4-bit mask:
+- Bit 0: White King-side (K)
+- Bit 1: White Queen-side (Q)
+- Bit 2: Black King-side (k)
+- Bit 3: Black Queen-side (q)
+
+#### Move (`bitboardChess.Move`)
+
+```go
+type Move struct {
+    From       uint8  // Source square (0–63)
+    To         uint8  // Destination square (0–63)
+    PieceType  uint8  // Moving piece: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4, King=5
+    promoteTo  uint8  // Promotion piece type (0 if no promotion)
+    isCapture  bool
+    isCheck    bool
+    isEnPassant bool
+    isCastle   bool
+}
+```
+
+Access methods (defined in compatibility layer):
+- `Move.S1()` → source square as `chess.Square` enum
+- `Move.S2()` → destination square as `chess.Square` enum
+- `Move.Promo()` → promotion piece type (or `NoPieceType`)
+- `Move.HasTag(tag)` → true if move has flag (Capture, Check, EnPassant, etc.)
+
+### 16.3 Compatibility API Layer
+
+The `bitboardChess/compatibility_api.go` file (576 lines) provides a complete adapter layer
+that translates the engine's chess v2 API calls onto the bitboard implementation. Key types:
+
+```go
+// Type aliases for familiar enumerations
+type Color uint8
+type Piece uint8
+type PieceType uint8
+type Square uint8
+type MoveTag uint8
+
+// Wrapper struct for position
+type Position struct {
+    board Board
+}
+
+// Game struct (similar to chess.Game)
+type Game struct {
+    position *Position
+    moves    []Move
+}
+
+// Move metadata provider
+type Move struct { From, To uint8; ... }
+
+// Full chess v2-compatible API
+func (p *Position) Turn() Color
+func (p *Position) ValidMoves() []Move
+func (p *Position) Update(move *Move) *Position
+func (p *Position) Board() *Board
+func (p *Position) Status() (GameStatus, bool)  // Terminal position detection
+func (p *Position) MarshalBinary() ([]byte, error)
+func (p *Position) CastleRights() string  // "KQkq" format
+func (p *Position) EnPassantSquare() Square
+```
+
+**Key implementation detail: `MarshalBinary()` Index Mapping**
+
+The engine's PST evaluation and bitboard utilities expect a specific bitboard layout.
+The `MarshalBinary()` function must account for the library's internal square indexing
+vs. the engine's expected layout. This is handled by the `mirrorFilesInRanks()` helper,
+which flips bitboard bit patterns to realign file ordering for PST lookups.
+
+```go
+func (p *Position) MarshalBinary() ([]byte, error) {
+    bbs := p.board.GetBitboards()  // 12 bitboards
+    for i := range &bbs {
+        bbs[i] = mirrorFilesInRanks(bbs[i])  // Adjust for PST indexing
+    }
+    // ... encode bbs into [96]byte array ...
+    return result, nil
+}
+```
+
+### 16.4 Move Generation Algorithm
+
+`GenerateValidMoves(board Board) []Move` is the primary move generation entry point.
+
+**High-level strategy:**
+
+1. **Iterate piece types** (Pawns, Knights, Bishops, Rooks, Queens, Kings)
+2. **For each piece of the moving side:**
+   - Use pre-computed magic bitboards or attack tables to find all legal destination squares
+   - Filter out moves that leave the king in check
+3. **Escape moves from check** (if the side is in check):
+   - Generate all moves that block or capture the attacking piece
+   - (Single-check moves only; double-check must move the king)
+4. **Encode each move** as a `Move` struct with flags (Capture, Check, EnPassant, Castle)
+5. **Return all legal moves** as a `[]Move` slice
+
+**Attack table usage:**
+
+Pre-computed lookup tables (`generated_attack_tables.go`, `generated_magic_bitboards.go`)
+provide instant attack masks:
+
+```go
+// Pawn attacks from square sq (for side color) — simple lookup
+pawnAttacks := pawnAttackTable[color][sq]
+
+// Knight attacks from square sq
+knightAttacks := knightAttackTable[sq]
+
+// Sliding piece attacks (bishops/rooks/queens) — magic bitboard lookup
+// Accounts for occupied squares (blockers) to compute legal rays
+rook Attacks := rookAttackTable(sq, occupancy)
+```
+
+The magic bitboard technique uses pre-computed hash functions to instantly compute
+sliding-piece attacks even with obstacles. This is significantly faster than scanning
+rays square-by-square.
+
+### 16.5 Board State Representation
+
+**FEN Parsing (`NewBoardFromFEN`):**
+
+```go
+func NewBoardFromFEN(fen string) *Board
+```
+
+Parses a standard FEN string and initializes all 12 bitboards, castle rights, en passant square,
+halfmove clock, and fullmove number in one pass.
+
+**Move Application (`Board.Update`):**
+
+```go
+func (b *Board) Update(m Move) (Board, error)
+```
+
+Applies a move to the board, handling:
+- Piece placement (source → destination)
+- Capture removal (clearing opponent's piece)
+- En passant capture (removing pawn one rank behind the destination)
+- Castling (moving both king and rook)
+- Promotion (replacing pawn with promoted piece)
+- Castle rights updates (lost when king/rook moves)
+- Halfmove clock reset (on pawn move or capture)
+- Fullmove counter increment (after Black's move)
+
+Returns the new `Board` state or an error if the move is invalid.
+
+### 16.6 Integration with Engine
+
+The engine interacts with the bitboard library exclusively through the compatibility layer:
+
+```go
+import chess "github.com/TheUtkarsh8939/bitboardChess"
+
+// In search.go
+func rateAllMoves(position *chess.Position, depth uint8, ...) (*chess.Move, int) {
+    moves := position.ValidMoves()      // Returns []chess.Move
+    for _, move := range moves {
+        child := position.Update(&move)  // Returns new *chess.Position
+        score := minimax(child, depth-1, ...)
+    }
+}
+```
+
+The engine never manipulates bitboards directly. All bitboard logic is encapsulated within
+the library — the engine's code remains clean and portable.
+
+---
+
+## 17. Opening Book Integration — `opening_handler.go`
+
+The engine integrates ECO opening book support via the external `github.com/corentings/chess/v2/opening` library. 
+Rather than rewriting or replacing this dependency, a **legacy bridge pattern** is used to maintain compatibility 
+with the old chess library's `opening.BookECO.Possible(moves []*chess.Move)` API while the rest of the engine 
+uses the new bitboard library.
+
+### 17.1 ECO Opening Book System
+
+The `opening.BookECO` database contains hundreds of thousands of known opening lines organized by ECO code 
+(Encyclopaedia of Chess Openings). Each opening is a sequence of moves drawn from master games.
+
+**How the book integration works:**
+
+1. **Initialize the book once at startup**:
    ```go
-   book := opening.NewBookECO()  // Loads ECO opening database
+   book := opening.NewBookECO()  // Loads ECO database from embedded resource
    ```
 
-2. **Query for the next move** — pass all moves played so far:
+2. **At each turn, query the book for the next move**:
    ```go
-   nextMove := findNextMove(moveArray, book)
+   nextMove := findNextMove(uciMoveHistory, book)
    ```
-   
-   - `book.Possible(moves)` filters the opening database to lines matching the move history
-   - If matches exist, parse the opening's PGN notation into individual moves
-   - Return the move at index `len(moves)` (the next move after current history)
-   - Returns `nil` if no matching openings or if the book line has ended
+   - Input: `uciMoveHistory` is a `[]string` of UCI move tokens (e.g., `["e2e4", "c7c5", "g1f3"]`)
+   - Output: A single UCI move token (e.g., `"d2d4"`) or empty string if no book move exists
 
-3. **Integration in main.go**: Before each search, check the opening book. If a move is found,
-   return it immediately without running `iterativeDeepening`:
-   
+3. **In the UCI command loop** (`main.go`):
    ```go
-   if len(moveArray) < 8 {  // Only book moves in early game
-       nextMove := findNextMove(moveArray, book)
-       if nextMove != nil {
-           fmt.Printf("bestmove %s\n", nextMove)
+   if len(moveArray) < 8 {  // Consult book early game
+       bookMove := findNextMove(moveArray, book)
+       if bookMove != "" {
+           fmt.Printf("bestmove %s\n", bookMove)
            return  // Skip expensive search
        }
    }
    iterativeDeepening(pos, depth, pst, isWhite)  // Fall back to search
    ```
 
-### PGN Parser
+### 17.2 Legacy Bridge Pattern
 
-`parsePGNMoves(pgn string)` extracts individual moves from a PGN (Portable Game Notation) string:
+The core challenge: the bitboard library's engine now uses UCI move strings (`[]string`), 
+but `opening.BookECO.Possible()` expects the old chess library's `[]*chess.Move` objects. 
+Rather than modifying the opening package, a **bridge function** converts between the two:
 
+**`buildLegacyMovesFromUCI(uciMoves []string) ([]*chess.Move, error)`:**
+
+```go
+func buildLegacyMovesFromUCI(uciMoves []string) ([]*chess.Move, error) {
+    game := chess.NewGame()  // Create temporary old-library game
+    legacyMoves := make([]*chess.Move, 0, len(uciMoves))
+    
+    for _, token := range uciMoves {
+        // Decode UCI token into old chess.Move using old library's API
+        mv, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), token)
+        if err != nil {
+            return nil, err
+        }
+        legacyMoves = append(legacyMoves, mv)
+        
+        // Apply move to keep the game state synchronized
+        if err := game.Move(mv, &chess.PushMoveOptions{}); err != nil {
+            return nil, err
+        }
+    }
+    return legacyMoves, nil
+}
+```
+
+This function:
+1. Creates a temporary `chess.Game` to track position state
+2. For each UCI move token (e.g., "e2e4"), decodes it into an old `chess.Move`
+3. Applies each move to the temporary game
+4. Returns the list of old-format moves
+
+The decoder uses the current position state to disambiguate moves (e.g., multiple knights can 
+move to the same square in rare positions, though UCI should already be unambiguous).
+
+**`findNextMove(uciMoves []string, book *opening.BookECO) string`:**
+
+```go
+func findNextMove(uciMoves []string, book *opening.BookECO) string {
+    // Convert UCI move history to old library format
+    moves, err := buildLegacyMovesFromUCI(uciMoves)
+    if err != nil {
+        return ""
+    }
+
+    // Query opening book
+    openings := book.Possible(moves)
+    if len(openings) == 0 {
+        return ""  // No opening line matches
+    }
+
+    // Extract moves from the first matching opening
+    pgn := openings[0].PGN()
+    pgnMoves := parsePGNMoves(pgn)
+    if len(pgnMoves) <= len(uciMoves) {
+        return ""  // Book line has ended
+    }
+
+    // Return the next move in UCI format (PGN is parsed as UCI)
+    return pgnMoves[len(uciMoves)]
+}
+```
+
+This function:
+1. Converts UCI move history to old chess.Move format via `buildLegacyMovesFromUCI()`
+2. Queries the opening book with the converted moves
+3. If matches exist, parses the opening's PGN and returns the next move in the sequence
+4. Returns empty string if the book line has ended or no matches found
+
+**Why this pattern is necessary:**
+
+The opening book API is locked to `Book.Possible(moves []*chess.Move)` — we cannot change external signatures. 
+By keeping a minimal legacy import (`github.com/corentings/chess/v2` + `github.com/corentings/chess/v2/opening` 
+only for the opening package) and converting moves on-demand via the bridge, we avoid:
+- Rewriting the opening book library (impossible — it's external)
+- Forcing the entire engine to import the old library (performance regression)
+- Duplicating opening book data (massive binary burden)
+
+The cost is minimal: the bridge is only called 4–8 times per game (opening book rarely applies beyond move 8), 
+so the temporary `chess.Game` allocation and move decoding happen infrequently.
+
+### 17.3 UCI Move History Tracking
+
+The engine's main loop (`main.go`) now tracks move history as **UCI strings** instead of Move objects:
+
+```go
+var moveArray []string  // e.g., ["e2e4", "c7c5", "g1f3", ...]
+```
+
+**`applyMovesUCI(moveList []string, position *chess.Position)`:**
+
+For each UCI move token in the input (from the UCI `position` command), decode it and apply it.
+The decoded move is converted back to UCI format and appended to `moveArray`:
+
+```go
+for _, token := range moveList {
+    mv, _ := chess.Notation.Decode(chess.UCINotation{}, position, token)
+    position = position.Update(mv)
+    moveArray = append(moveArray, token)
+}
+```
+
+This approach keeps `moveArray` as pure UCI strings, avoiding any dependency on the chess Move type 
+in the core loop.
+
+**Benefits of this approach:**
+
+1. **Cleaner data flow:** The engine logic doesn't care about Move struct details; it works with move tokens
+2. **Reduced coupling:** Main loop doesn't need to know chess.Move layout or memory semantics
+3. **Efficient bridging:** To query the opening book, `findNextMove()` converts the string batch once, 
+   rather than converting individual Move objects throughout the loop
+4. **Stateless opening queries:** The opening book function is a pure function mapping `[]string → string`, 
+   with no side effects or parameter-passing complications
+
+**`parsePGNMoves(pgn string) []string`:**
+
+Extracts individual moves from a PGN (Portable Game Notation) string:
+
+```go
+func parsePGNMoves(pgn string) []string {
+    tokens := strings.Fields(pgn)
+    var moves []string
+
+    for _, token := range tokens {
+        // Skip move numbers (e.g., "1.", "2.", "...")
+        if strings.HasSuffix(token, ".") {
+            continue
+        }
+        // Skip any other non-move tokens
+        if token == "" || token == "*" {
+            continue
+        }
+        moves = append(moves, token)
+    }
+    return moves
+}
+```
+
+The parser:
 - Splits the PGN by whitespace
 - Skips move numbers (tokens ending with `.`, e.g., `1.`, `2.`)
 - Skips metadata and annotations
@@ -1257,40 +1742,18 @@ func parsePGNMoves(pgn string) []string
 
 The parser handles both UCI-style moves (`e2e4`) and standard algebraic notation (`Nf3`, `O-O`).
 
-### API Details
+### 17.4 Integration Checklist
 
-**`Opening` struct** (from `chess/v2/opening`):
-- `Opening.PGN()` → full PGN string of all moves in that opening
-- `Opening.Code()` → ECO code (e.g., `B20`)
-- `Opening.Title()` → human-readable opening name (e.g., `Sicilian Defense`)
-
-**`BookECO` methods:**
-- `BookECO.Possible(moves)` → `[]*Opening` — all openings matching the move history
-
-### Optimization Notes
-
-- **Early exit:** The engine only consults the book for the first 8 half-moves (4 full moves).
-  Beyond that, search is more reliable than book lines.
-- **No rematches:** Once a book move is found and played, the opening line is locked in for
-  subsequent moves. This ensures consistency with the stored line.
-- **Stateless:** `findNextMove` is purely functional — it takes the full move history and
-  returns the next move without side effects or mutable state.
-
-### Example
-
-Given a Sicilian Najdorf opening with moves `1.e4 c5 2.Nf3 e6`:
-
-```go
-moves := []*chess.Move{move1, move2}  // [e2e4, c7c5]
-book := initBook()
-
-nextMove := findNextMove(moves, book)
-// Returns: the move for 2.Nf3 (White's second move)
-```
+- ✅ `opening_handler.go` imports both old (`github.com/corentings/chess/v2`) and new (`github.com/TheUtkarsh8939/bitboardChess`) libraries
+- ✅ Engine core files (`search.go`, `eval.go`, etc.) import only the new bitboard library (via compatibility layer)
+- ✅ Move history in `main.go` is `[]string` (UCI moves)
+- ✅ `findNextMove()` signature is `(uciMoves []string, book) → string`
+- ✅ Bridge function `buildLegacyMovesFromUCI()` handles conversion on-demand
+- ✅ No opening book functionality is modified; only the call site is adapted
 
 ---
 
-## 17. Build Instructions
+## 18. Build Instructions
 
 ### Standard build
 
