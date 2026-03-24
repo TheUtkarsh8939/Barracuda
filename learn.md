@@ -10,59 +10,61 @@
 ## Table of Contents
 
 1. [Project Structure](#1-project-structure)
-2. [How a Chess Engine Works — The Mental Model](#2-how-a-chess-engine-works--the-mental-model)
-3. [Search — `search.go`](#3-search--searchgo)
-   - 3.1 Minimax & Alpha-Beta
-   - 3.2 Late Move Reduction (LMR)
-   - 3.3 Transposition Table
-   - 3.4 Iterative Deepening
-   - 3.5 Root Search (`rateAllMoves`) & Aspiration Windows
-      - 3.5.1 Late Move Reduction at Root
-      - 3.5.2 Principal Variation Search (PVS)
-   - 3.6 Null-Move Pruning
-   - 3.7 Move Selector (`pickNextBestMove`)
-4. [Quiescence Search — `quiescence_search.go`](#4-quiescence-search--quiescence_searchgo)
-5. [Evaluation — `eval.go`](#5-evaluation--evalgo)
-   - 5.1 Material
-   - 5.2 Piece-Square Tables
-   - 5.3 Phase-Blended Evaluation
-   - 5.4 Endgame King Centralization
-   - 5.5 Pawn Structure Helper (`doublePawns`)
-   - 5.6 Bitboard-Based Evaluator Implementation
-6. [Move Ordering — `eval.go` (`EvaluateMove`)](#6-move-ordering--evalgo-evaluatemove)
-7. [Piece-Square Tables — `pst.go`](#7-piece-square-tables--pstgo)
-8. [Killer Move Heuristic — `handler.go`](#8-killer-move-heuristic--handlergo)
-9. [Position Hashing — `hashing.go`](#9-position-hashing--hashinggo)
-   - 9.1 Zobrist Hashing Primer
-   - 9.2 Key Tables & splitmix64
-   - 9.3 fastPosHash (Full Scan)
-   - 9.4 fastChildHash (Incremental)
-   - 9.5 Performance Comparison
-10. [Principal Variation Store — `pv_store.go`](#10-principal-variation-store--pv_storego)
-11. [Utilities — `misc.go`](#11-utilities--miscgo)
-12. [UCI Protocol — `main.go` & `ucihelper.go`](#12-uci-protocol--maingo--ucihelpergo)
+2. [How a Chess Engine Works � The Mental Model](#2-how-a-chess-engine-works--the-mental-model)
+3. [Search � `search.go`](#3-search--searchgo)
+   - 3.1 [Minimax & Alpha-Beta](#31-minimax--alpha-beta)
+   - 3.2 [Late Move Reduction (LMR)](#32-late-move-reduction-lmr)
+   - 3.3 [Transposition Table](#33-transposition-table)
+   - 3.4 [Iterative Deepening](#34-iterative-deepening)
+   - 3.5 [Root Search (`rateAllMoves`) & Aspiration Windows](#35-root-search-rateallmoves--aspiration-windows)
+      - 3.5.1 [Late Move Reduction at Root](#351-late-move-reduction-at-root)
+      - 3.5.2 [Principal Variation Search (PVS)](#352-principal-variation-search-pvs)
+   - 3.6 [Null-Move Pruning](#36-null-move-pruning)
+   - 3.7 [Move Selector (`pickNextBestMove`)](#37-move-selector-picknextbestmove)
+4. [Quiescence Search � `quiescence_search.go`](#4-quiescence-search--quiescence_searchgo)
+5. [Evaluation � `eval.go`](#5-evaluation--evalgo)
+   - 5.1 [Material](#51-material)
+   - 5.2 [Phase-Blended Evaluation](#52-phase-blended-evaluation)
+   - 5.3 [Endgame King Centralization](#53-endgame-king-centralization)
+   - 5.4 [Pawn Structure (`pawnStructure` in `pawn_structure.go`)](#54-pawn-structure-pawnstructure-in-pawn_structurego)
+   - 5.5 [Bitboard-Based Evaluator Implementation](#55-bitboard-based-evaluator-implementation)
+6. [Move Ordering � `eval.go` (`EvaluateMove`)](#6-move-ordering--evalgo-evaluatemove)
+7. [Piece-Square Tables � `pst.go`](#7-piece-square-tables--pstgo)
+8. [Killer Move Heuristic � `handler.go`](#8-killer-move-heuristic--handlergo)
+9. [Position Hashing � `hashing.go`](#9-position-hashing--hashinggo)
+   - 9.1 [Zobrist Hashing Primer](#91-zobrist-hashing-primer)
+   - 9.2 [Key Tables & splitmix64](#92-key-tables--splitmix64)
+   - 9.3 [fastPosHash (Full Scan)](#93-fastposhash-full-scan)
+   - 9.4 [fastChildHash (Incremental)](#94-fastchildhash-incremental)
+   - 9.5 [Performance Comparison](#95-performance-comparison)
+10. [Principal Variation Store � `pv_store.go`](#10-principal-variation-store--pv_storego)
+11. [Utilities � `misc.go`](#11-utilities--miscgo)
+12. [UCI Protocol � `main.go` & `ucihelper.go`](#12-uci-protocol--maingo--ucihelpergo)
 13. [Data Flow: One Full Search Cycle](#13-data-flow-one-full-search-cycle)
 14. [Performance Notes & Optimization History](#14-performance-notes--optimization-history)
-    - 14.1 Runtime Modes (`MODE=1..4`)
-    - 14.2 Profiling Harness (`profiling.go`)
-15. [Configuration: Centralized Tuning Constants](#15-configuration-centralized-tuning-constants)
-16. [Bitboard Library Architecture — `bitboardChess/`](#16-bitboard-library-architecture--bitboardchess)
-    - 16.1 Overview & Design Rationale
-    - 16.2 Core Data Structures
-    - 16.3 Compatibility API Layer
-    - 16.4 Move Generation Algorithm
-    - 16.5 Board State Representation
-17. [Opening Book Integration — `opening_handler.go`](#17-opening-book-integration--opening_handlergo)
-    - 17.1 ECO Opening Book System
-    - 17.2 Legacy Bridge Pattern
-    - 17.3 UCI Move History Tracking
-18. [Build Instructions](#18-build-instructions)
+    - 14.1 [Runtime Modes (`MODE=1..4`)](#141-runtime-modes-mode14)
+    - 14.2 [Profiling Harness (`profiling.go`)](#142-profiling-harness-profilinggo)
+15. [Known Gaps & What to Implement Next](#15-known-gaps--what-to-implement-next)
+16. [Configuration: Centralized Tuning Constants](#16-configuration-centralized-tuning-constants)
+17. [Bitboard Library Architecture � `bitboardChess/`](#17-bitboard-library-architecture--bitboardchess)
+    - 17.1 [Overview & Design Rationale](#171-overview--design-rationale)
+    - 17.2 [Core Data Structures](#172-core-data-structures)
+    - 17.3 [Compatibility API Layer](#173-compatibility-api-layer)
+    - 17.4 [Move Generation Algorithm](#174-move-generation-algorithm)
+    - 17.5 [Board State Representation](#175-board-state-representation)
+    - 17.6 [Integration with Engine](#176-integration-with-engine)
+18. [Opening Book Integration � `opening_handler.go`](#18-opening-book-integration--opening_handlergo)
+    - 18.1 [Custom Text-Based Opening Book](#181-custom-text-based-opening-book)
+    - 18.2 [Binary Search Lookup (`findNextMove`)](#182-binary-search-lookup-findnextmove)
+    - 18.3 [Bidirectional Move Format Converters](#183-bidirectional-move-format-converters)
+    - 18.4 [Integration Advantages](#184-integration-advantages)
+19. [Build Instructions](#19-build-instructions)
 
 ---
 
 ## 1. Project Structure
 
-```
+```text
 main.go               — UCI command loop + benchmark test harness
 search.go             — minimax, alpha-beta, iterative deepening, LMR, move sorting
 eval.go               — static position evaluation + move ordering scorer
@@ -72,12 +74,17 @@ handler.go            — killer move table management
 hashing.go            — Zobrist-style hashing: fastPosHash + fastChildHash (incremental)
 pv_store.go           — principal variation table: pvLookup, pvStore, buildPVLine
 transposition_table.go — transposition table: ttLookup, ttStore, ttEntry with bounds
-misc.go               — Move struct, SearchOptions, isCastlingMove
+pawn_structure.go     — advanced pawn structure evaluation
+config_variables.go   — centralized tuning constants and engine configuration
+opening_handler.go    — ECO opening book system using custom text-based lookup
+library_extension.go  — format converters bridging bitboard formats to UCI/SAN
+misc.go               — Move struct, SearchOptions, bitboard and PST helpers
 ucihelper.go          — parseGoCmd (UCI "go" command tokenizer)
 profiling.go          — microbenchmark harness (hot-function timing + CPU usage)
 profiling_cpu_*.go    — per-OS process CPU time readers (Windows/!Windows)
 autoSyntaxGenerator.py — helper script used to generate file bitboard masks
-go.mod / go.sum       — module definitions (direct dependency: corentings/chess)
+go.mod / go.sum       — module definitions
+bitboardChess/        — high-performance custom bitboard library directory
 ```
 
 **Dependency:** `github.com/corentings/chess/v2` handles the board, legal move generation,
@@ -1185,7 +1192,7 @@ currently misjudges evaluation.
 
 ---
 
-## 15. Configuration: Centralized Tuning Constants
+## 16. Configuration: Centralized Tuning Constants
 
 All engine tuning parameters are defined in a single file: `config_variables.go`.
 
@@ -1230,9 +1237,9 @@ When experimenting with optimizations:
 2. Run `MODE=1` benchmark to measure nodes/time impact
 3. Log successful tuning results in `learn.md` and commit changes
 
-## 16. Bitboard Library Architecture — `bitboardChess/`
+## 17. Bitboard Library Architecture — `bitboardChess/`
 
-### 16.1 Overview & Design Rationale
+### 17.1 Overview & Design Rationale
 
 Barracuda uses a custom, high-performance bitboard library (`github.com/TheUtkarsh8939/bitboardChess`)
 for position representation and move generation. This library was chosen to replace the external
@@ -1279,7 +1286,7 @@ This decoupling allows the core engine files (`search.go`, `eval.go`, `hashing.g
 largely unchanged after the library swap — they compile against the same API signatures,
 but now backed by the fast bitboard implementation.
 
-### 16.2 Core Data Structures
+### 17.2 Core Data Structures
 
 #### Bitboard (`uint64`)
 
@@ -1362,7 +1369,7 @@ Access methods (defined in compatibility layer):
 - `Move.Promo()` → promotion piece type (or `NoPieceType`)
 - `Move.HasTag(tag)` → true if move has flag (Capture, Check, EnPassant, etc.)
 
-### 16.3 Compatibility API Layer
+### 17.3 Compatibility API Layer
 
 The `bitboardChess/compatibility_api.go` file (576 lines) provides a complete adapter layer
 that translates the engine's chess v2 API calls onto the bitboard implementation. Key types:
@@ -1418,7 +1425,7 @@ func (p *Position) MarshalBinary() ([]byte, error) {
 }
 ```
 
-### 16.4 Move Generation Algorithm
+### 17.4 Move Generation Algorithm
 
 `GenerateValidMoves(board Board) []Move` and `GenerateValidMovesInto(board Board, moveBuffer []Move)` are the primary move generation entry points. `GenerateValidMovesInto` prevents excessive slice allocations during deep recursive searches by efficiently reusing a pre-allocated capacity-64 buffer.
 
@@ -1456,7 +1463,7 @@ The magic bitboard technique uses pre-computed hash functions to instantly compu
 sliding-piece attacks even with obstacles. This is significantly faster than scanning
 rays square-by-square.
 
-### 16.5 Board State Representation
+### 17.5 Board State Representation
 
 **FEN Parsing (`NewBoardFromFEN`):**
 
@@ -1484,7 +1491,7 @@ Applies a move to the board, handling:
 
 Returns the new `Board` state or an error if the move is invalid.
 
-### 16.6 Integration with Engine
+### 17.6 Integration with Engine
 
 The engine interacts with the bitboard library exclusively through the compatibility layer:
 
@@ -1506,11 +1513,11 @@ the library — the engine's code remains clean and portable.
 
 ---
 
-## 17. Opening Book Integration — `opening_handler.go`
+## 18. Opening Book Integration — `opening_handler.go`
 
 The engine uses a highly efficient, custom text-based opening book system integrated cleanly with the bitboard engine. It replaces the old, heavy `opening.BookECO` dependency with a binary-searchable in-memory string list and a native SAN encloder.
 
-### 17.1 Custom Text-Based Opening Book
+### 18.1 Custom Text-Based Opening Book
 
 Instead of relying on external ECO databases, the engine now reads directly from an `openings.txt` file containing hundreds of thousands of known opening sequences in standard algebraic notation (SAN).
 
@@ -1527,7 +1534,7 @@ Instead of relying on external ECO databases, the engine now reads directly from
    - Pushes into a dynamically sized `[]string` array.
    Since the input text file is lexicographically sorted, the array remains perfectly sorted in memory.
 
-### 17.2 Binary Search Lookup (`findNextMove`)
+### 18.2 Binary Search Lookup (`findNextMove`)
 
 The core lookup algorithm, `findNextMove`, uses zero game-state allocation overhead while querying the book. It performs a **binary search prefix match** over the sorted `[]string` slice.
 
@@ -1558,7 +1565,7 @@ Benefits:
 - **Randomization:** Collects *all* continuations from the matching block and picks randomly, making engine play varied and unpredictable.
 - **Empty/No-match Fallback:** Dynamically falls back to choosing a random first move if the engine is out of book or starts without history.
 
-### 17.3 Bidirectional Move Format Converters
+### 18.3 Bidirectional Move Format Converters
 
 To operate entirely inside the internal engine's bitboard subset without invoking the `corentings` formats for book and GUI communications, `library_extension.go` implements two custom format converters connecting algebraic and UCI notations.
 
@@ -1588,7 +1595,7 @@ Once a book move is fetched as SAN, it must be relayed back through the UCI prot
 - Normalizes and matches them against the provided SAN token.
 - Handles resolving exact hits natively and outputs the matched move as its robust raw UCI command ready to be sent to the GUI or `applyMovesUCI`.
 
-### 17.4 Integration Advantages
+### 18.4 Integration Advantages
 
 - ✅ `opening_handler.go` uses built-in slices, strings, and random selection instead of external bloated ECO libraries.
 - ✅ Move history seamlessly flows between Bitboard structures, standard SAN lookup prefixes, and UCI GUI strings.
@@ -1597,7 +1604,7 @@ Once a book move is fetched as SAN, it must be relayed back through the UCI prot
 
 ---
 
-## 18. Build Instructions
+## 19. Build Instructions
 
 ### Standard build
 
