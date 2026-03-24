@@ -233,3 +233,62 @@ func movesToAlgebraicNotation(moves []*chess.Move) ([]string, error) {
 
 	return sanMoves, nil
 }
+
+func normalizeSANForComparison(token string) string {
+	s := strings.TrimSpace(token)
+	s = strings.ReplaceAll(s, "0-0-0", "O-O-O")
+	s = strings.ReplaceAll(s, "0-0", "O-O")
+	s = strings.TrimSuffix(s, " e.p.")
+	s = strings.TrimSuffix(s, "e.p.")
+
+	for len(s) > 0 {
+		last := s[len(s)-1]
+		if last == '+' || last == '#' || last == '!' || last == '?' {
+			s = s[:len(s)-1]
+			continue
+		}
+		break
+	}
+
+	return s
+}
+
+func sanEquivalent(a string, b string) bool {
+	return normalizeSANForComparison(a) == normalizeSANForComparison(b)
+}
+
+// moveFromAlgebraicToUCI converts one SAN token to its UCI form for the given position.
+func moveFromAlgebraicToUCI(pos *chess.Position, san string) (string, error) {
+	if pos == nil {
+		return "", fmt.Errorf("position is nil")
+	}
+
+	sanToken := strings.TrimSpace(san)
+	if sanToken == "" {
+		return "", fmt.Errorf("empty SAN token")
+	}
+
+	matchCount := 0
+	selectedUCI := ""
+
+	for _, cand := range pos.ValidMoves() {
+		cp := cand
+		candidateSAN, err := toSAN(pos, &cp)
+		if err != nil {
+			continue
+		}
+		if sanEquivalent(candidateSAN, sanToken) {
+			matchCount++
+			selectedUCI = cp.String()
+		}
+	}
+
+	if matchCount == 0 {
+		return "", fmt.Errorf("no legal move matches SAN %q", sanToken)
+	}
+	if matchCount > 1 {
+		return "", fmt.Errorf("ambiguous SAN %q", sanToken)
+	}
+
+	return selectedUCI, nil
+}

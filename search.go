@@ -103,7 +103,7 @@ func hashToUint64(h [16]byte) uint64 {
 // list are searched at depth-2 instead of depth-1. If they beat the current best,
 // a full re-search at depth-1 is done to confirm. This saves significant time since
 // later moves (after good ordering) are unlikely to be best.
-func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, posHash uint64, pst *PST, allowNull bool) int {
+func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, posHash uint64, pst *PST, allowNull bool, origDepth int) int {
 	nodesVisited++
 
 	alphaOrig := alpha
@@ -117,10 +117,19 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		alpha = newAlpha
 		beta = newBeta
 	}
+	// Generate and score all legal moves for sorting.
+	// Good move ordering is critical: the sooner we find a strong move,
+	// the more branches alpha-beta can prune.
+	movesRaw := position.ValidMoves()
 	// Terminal node: game is over (checkmate or stalemate). Evaluate and cache.
-	if position.Status() != chess.NoMethod {
-
-		eval := quiescence_search(position, alpha, beta, maximizer, quiescenceDepth, pst)
+	if len(movesRaw) == 0 {
+		eval := 0
+		if chess.IsCheck(*position.Board()) {
+			eval = mateScore - (origDepth - int(depth)) // Checkmate is bad for the side to move; subtract depth to prefer faster mates.
+			if position.Turn() == chess.White {
+				eval = -eval // White is checkmated
+			}
+		}
 		// eval := 0 //Temporarily disabled to calculate minimax overhead without eval time included.
 		// eval := EvaluatePos(position, pst) //Temporarily disabled to calculate minimax overhead without eval time included.
 
@@ -140,11 +149,6 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		return eval
 	}
 
-	// Generate and score all legal moves for sorting.
-	// Good move ordering is critical: the sooner we find a strong move,
-	// the more branches alpha-beta can prune.
-	movesRaw := position.ValidMoves()
-
 	// Null-move pruning: if even after giving the opponent a free move the position is still
 	// good enough to fail high/low, this node can often be pruned safely.
 	if allowNull && depth >= nullMoveMinDepth && hasNonPawnMaterial(position) {
@@ -152,13 +156,13 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 		nullHash := fastNullHash(position, nullPos, posHash)
 		if maximizer {
 			nullMovePrunes++
-			nullScore := minimax(nullPos, depth-1-nullMoveReduction, false, beta-1, beta, nullHash, pst, false)
+			nullScore := minimax(nullPos, depth-1-nullMoveReduction, false, beta-1, beta, nullHash, pst, false, origDepth)
 			if nullScore >= beta {
 				return nullScore
 			}
 		} else {
 			nullMovePrunes++
-			nullScore := minimax(nullPos, depth-1-nullMoveReduction, true, alpha, alpha+1, nullHash, pst, false)
+			nullScore := minimax(nullPos, depth-1-nullMoveReduction, true, alpha, alpha+1, nullHash, pst, false, origDepth)
 			if nullScore <= alpha {
 				return nullScore
 			}
@@ -193,15 +197,15 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			// Late Move Reduction: moves beyond the first few are likely weaker after good ordering.
 			// Search them at reduced depth first; only do a full search if they look promising.
 			if i >= lmrMoveIndex && depth >= lmrMinDepth && picked.score < 50 {
-				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst, true)
+				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst, true, origDepth)
 				if score > alpha {
 					// Promising — confirm with a full-depth search.
 					lmrResearches++
-					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
+					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true, origDepth)
 				}
 			} else {
 				// Normal full-depth search for early (likely better) moves.
-				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
+				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true, origDepth)
 			}
 			if score > bestScore {
 				bestMove = currentMove
@@ -240,14 +244,14 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			childHash := fastChildHash(position, child, currentMove, posHash)
 			// Late Move Reduction (minimizer side).
 			if i >= lmrMoveIndex && depth >= lmrMinDepth && picked.score < 50 {
-				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst, true)
+				score = minimax(child, depth-2, !maximizer, alpha, beta, childHash, pst, true, origDepth)
 				if score < beta {
 					// Promising — confirm with a full-depth search.
 					lmrResearches++
-					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
+					score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true, origDepth)
 				}
 			} else {
-				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true)
+				score = minimax(child, depth-1, !maximizer, alpha, beta, childHash, pst, true, origDepth)
 			}
 			if score < bestScore {
 				bestMove = currentMove
@@ -338,7 +342,7 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 		var score int
 		if idx == 0 {
 			// Principal move: search with full window
-			score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
+			score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true, int(depth))
 		} else {
 			// Non-principal moves: use null-window search first
 			// This quickly rejects moves that don't improve on alpha (or beta for black)
@@ -348,14 +352,14 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 				// Null-window fail-high: re-search with full window.
 				if score > alpha && score < beta {
 					aspirationResearches++
-					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
+					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true, int(depth))
 				}
 			} else {
 				score = lmrMinimax(child, depth-1, !isWhite, beta-1, beta, childHash, pst, true, idx)
 				// Null-window fail-low: re-search with full window.
 				if score > alpha && score < beta {
 					aspirationResearches++
-					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
+					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true, int(depth))
 				}
 			}
 		}
@@ -428,17 +432,30 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 			fmt.Println("bestmove", bestMove)
 			return
 		default:
+
 			depth := uint8(i + 1)
 			bestMove, bestScore = rateAllMoves(position, depth, pst, isWhite, prevScore, true)
+			if position.Turn() == chess.Black {
+				bestScore = -bestScore
+			}
 			elapsed := time.Since(timeNow).Seconds()
 			prevScore = bestScore // Store for next iteration's aspiration window
 			lastPrincipalVariation = buildPVLine(position, depth)
 			updatePredictedPVFromLine(position, lastPrincipalVariation)
 			lastBestMoves[Move{bestMove.S1(), bestMove.S2()}] = true
-			if len(lastPrincipalVariation) > 0 {
-				fmt.Printf("info depth %d score cp %d nodes %d nps %d pv %s\n", i+1, bestScore, nodesVisited, int(math.Floor(float64(nodesVisited)/elapsed)), strings.Join(lastPrincipalVariation, " "))
+			if absInt(bestScore) > 90000 {
+				mateIn := (mateScore - absInt(bestScore))
+				if len(lastPrincipalVariation) > 0 {
+					fmt.Printf("info depth %d score cp mate %d nodes %d nps %d pv %s\n", i+1, mateIn, nodesVisited, int(math.Floor(float64(nodesVisited)/elapsed)), strings.Join(lastPrincipalVariation, " "))
+				} else {
+					fmt.Printf("info depth %d score cp mate %d nodes %d nps %d\n", i+1, mateIn, nodesVisited, int(math.Floor(float64(nodesVisited)/elapsed)))
+				}
 			} else {
-				fmt.Printf("info depth %d score cp  %d nodes %d nps %d\n", i+1, bestScore, nodesVisited, int(math.Floor(float64(nodesVisited)/elapsed)))
+				if len(lastPrincipalVariation) > 0 {
+					fmt.Printf("info depth %d score cp %d nodes %d nps %d pv %s\n", i+1, bestScore, nodesVisited, int(math.Floor(float64(nodesVisited)/elapsed)), strings.Join(lastPrincipalVariation, " "))
+				} else {
+					fmt.Printf("info depth %d score cp  %d nodes %d nps %d\n", i+1, bestScore, nodesVisited, int(math.Floor(float64(nodesVisited)/elapsed)))
+				}
 			}
 		}
 	}
@@ -459,22 +476,22 @@ func lmrMinimax(position *chess.Position, depth uint8, maximizer bool, alpha int
 	score := 0
 	if moveIdx >= rootLMRMoveIndex && depth >= rootLMRMinDepth {
 		if maximizer {
-			score = minimax(position, depth-1, maximizer, alpha, beta, posHash, pst, allowNull)
+			score = minimax(position, depth-1, maximizer, alpha, beta, posHash, pst, allowNull, int(depth))
 			if score > alpha {
 				// Promising — confirm with a full-depth search.
 				lmrResearches++
-				score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull)
+				score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull, int(depth))
 			}
 		} else {
-			score = minimax(position, depth-1, maximizer, alpha, beta, posHash, pst, allowNull)
+			score = minimax(position, depth-1, maximizer, alpha, beta, posHash, pst, allowNull, int(depth))
 			if score < beta {
 				// Promising — confirm with a full-depth search.
 				lmrResearches++
-				score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull)
+				score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull, int(depth))
 			}
 		}
 	} else {
-		score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull)
+		score = minimax(position, depth, maximizer, alpha, beta, posHash, pst, allowNull, int(depth))
 	}
 	return score
 }

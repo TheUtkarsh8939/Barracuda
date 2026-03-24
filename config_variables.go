@@ -79,6 +79,9 @@ const (
 	// pvFollowBonus strongly prioritizes a move that the previous completed PV predicted
 	// for the current position hash. This is ordering-only and does not skip other moves.
 	pvFollowBonus = 1000
+
+	//Mate Score, an arbitrary large value to represent checkmate in the evaluation. The exact value is not critical as long as it's larger than any possible material evaluation, and allows for depth-based adjustments to prefer faster mates.
+	mateScore = 99999
 )
 
 //QUIESCENCE SEARCH CONSTANTS

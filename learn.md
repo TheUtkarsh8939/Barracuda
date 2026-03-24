@@ -1558,26 +1558,42 @@ Benefits:
 - **Randomization:** Collects *all* continuations from the matching block and picks randomly, making engine play varied and unpredictable.
 - **Empty/No-match Fallback:** Dynamically falls back to choosing a random first move if the engine is out of book or starts without history.
 
-### 17.3 Native SAN Encoding Support
+### 17.3 Bidirectional Move Format Converters
 
-To support returning algebraic notation cleanly out of the internal engine's subset without invoking corentings formats, the engine includes a native `movesToAlgebraicNotation` generator using `bitboardChess.Move`.
+To operate entirely inside the internal engine's bitboard subset without invoking the `corentings` formats for book and GUI communications, `library_extension.go` implements two custom format converters connecting algebraic and UCI notations.
 
-**`movesToAlgebraicNotation(moves []*chess.Move) ([]string, error)`:**
+**1. `movesToAlgebraicNotation` (UCI/Bitboard to SAN)**
 
-Located in `library_extension.go`, this helper performs complete legal-move validation and Standard Algebraic Notation (SAN) string building natively.
-It constructs moves handling:
+```go
+func movesToAlgebraicNotation(moves []*chess.Move) ([]string, error)
+```
+
+This takes a sequence of structural `bitboardChess.Move` history and validates/builds Standard Algebraic Notation (SAN) strings natively. It constructs moves by simulating the game state step-by-step:
 - **Castling:** Converts king moves over two squares into `O-O` and `O-O-O`.
 - **Captures & En Passant:** Automatically inserts `x` (e.g., `dxe5`, `Nxe4`).
 - **Disambiguation:** Confirms if multiple identical pieces attack the same square by walking `GenerateValidMoves()` efficiently, appending file or rank chars as needed (e.g., `Nbd7` or `R1e3`).
 - **Promotions:** Appends `=Q`, `=R`, `=B`, `=N`.
-- **Checks and Checkmates:** Tests `isKingInCheckForSide` and `Status() == Checkmate` on the updated board to defensively add `+` or `#`.
+- **Checks and Checkmates:** Tests for check and checkmate across the updated board to defensively add `+` or `#`.
+
+**2. `moveFromAlgebraicToUCI` (SAN to UCI)**
+
+```go
+func moveFromAlgebraicToUCI(pos *chess.Position, san string) (string, error)
+```
+
+Once a book move is fetched as SAN, it must be relayed back through the UCI protocol as a structured UCI string (e.g., `e2e4` or `g1f3`). This function resolves a SAN token dynamically against the engine's current position:
+- Takes the SAN string retrieved from the book (e.g. `Nf3`).
+- Generates all valid bitboard moves for the active side.
+- Temporarily formats each valid bitboard move to its SAN string equivalent.
+- Normalizes and matches them against the provided SAN token.
+- Handles resolving exact hits natively and outputs the matched move as its robust raw UCI command ready to be sent to the GUI or `applyMovesUCI`.
 
 ### 17.4 Integration Advantages
 
 - ✅ `opening_handler.go` uses built-in slices, strings, and random selection instead of external bloated ECO libraries.
-- ✅ Move history in `main.go` remains purely string-driven during the book phase.
-- ✅ Elimination of the old `legacy bridge pattern` saves thousands of allocations per game.
-- ✅ Bitboard moves directly support robust translation into PGN-compatible output safely for book building or debugging.
+- ✅ Move history seamlessly flows between Bitboard structures, standard SAN lookup prefixes, and UCI GUI strings.
+- ✅ Complete elimination of the old `legacy bridge pattern` saves thousands of allocations per game.
+- ✅ Custom formatting cleanly ensures engine compatibility with native standard openings without any strict library lock-ins.
 
 ---
 

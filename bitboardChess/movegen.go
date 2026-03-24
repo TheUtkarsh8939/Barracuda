@@ -848,7 +848,9 @@ func isKingInCheckForSide(b Board, white bool) bool {
 	}
 	return IsSquareAttacked(ksq, !white, b)
 }
-
+func IsCheck(b Board) bool {
+	return isKingInCheckForSide(b, b.turn)
+}
 func occupancy(b Board) (Bitboard, Bitboard, Bitboard) {
 	white := b.WhitePawns | b.WhiteKnights | b.WhiteBishops | b.WhiteRooks | b.WhiteQueens | b.WhiteKing
 	black := b.BlackPawns | b.BlackKnights | b.BlackBishops | b.BlackRooks | b.BlackQueens | b.BlackKing

@@ -97,13 +97,6 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 	}
 	wbb, bbb := bitboards[5], bitboards[11]
 	score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
-	if position.Status() == chess.Checkmate {
-		if position.Turn() == chess.White {
-			return -99999 // White is checkmated
-		} else {
-			return 99999 // Black is checkmated
-		}
-	}
 	evaluateFunctionCalls++
 	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
 	if bitboards[0] != 0 {
