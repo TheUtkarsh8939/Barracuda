@@ -42,11 +42,14 @@ var lastPrincipalVariation []string
 // It is rebuilt from the latest completed PV line and reused by the next search.
 var predictedPVByHash = make(map[uint64]Move)
 
-// pvLookup returns the cached best move for this position if available at sufficient depth.
+// pvLookup returns the cached best move for this position if available.
 func pvLookup(h uint64, depth uint8) (string, bool) {
 	idx := h & ttMask
 	entry := &pvTable[idx]
-	if entry.hashKey == h && entry.depth >= depth && entry.moveUCI != "" {
+	// We no longer strictly require entry.depth >= depth. Due to LMR (Late Move Reduction)
+	// and null-move pruning, nodes on the main line might have been stored at slightly
+	// lower depths. If the hash matches, it's the correct position's favored move.
+	if entry.hashKey == h && entry.moveUCI != "" {
 		return entry.moveUCI, true
 	}
 	return "", false
@@ -58,6 +61,11 @@ func pvStore(h uint64, depth uint8, move *chess.Move) {
 		return
 	}
 	idx := h & ttMask
+	// Depth-preferred replacement: preserve entries from deeper searches (closer to the root).
+	// This protects the principal variation from being overwritten by millions of shallow leaf nodes.
+	if pvTable[idx].depth > depth {
+		return
+	}
 	pvTable[idx] = pvEntry{hashKey: h, depth: depth, moveUCI: fmt.Sprint(move)}
 }
 

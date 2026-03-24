@@ -48,6 +48,19 @@ const (
 	// first, then confirmed at full depth only if they beat the current best.
 	lmrMoveIndex = 4
 
+	// rootLMRMinDepth is the minimum depth at which LMR is applied in the root search.
+	// Root moves are critical and have a high branching factor, so we want to be very conservative
+	// about applying LMR here. Setting this to a very high value effectively disables root LMR,
+	// which is a common choice among strong engines. If you want to experiment with root LMR,
+	// try values around 6-8 and watch for any drop in playing strength.
+	rootLMRMinDepth = 255
+
+	// rootLMRMoveIndex is the move index after which LMR is applied in the root search.
+	// Root moves are critical and have a high branching factor, so we want to be very conservative
+	// about applying LMR here. Setting this to a very high value effectively disables root LMR,
+	// which is a common choice among strong engines. If you want to experiment with root LMR,
+	// try values around 8-12 and watch for any drop in playing strength.
+	rootLMRMoveIndex = 255
 	// Null-move pruning settings. At sufficient depth, we search a "pass" move with
 	// reduced depth; if it still fails high/low, we can prune this node.
 	nullMoveMinDepth  = 3

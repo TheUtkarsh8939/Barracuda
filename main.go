@@ -126,7 +126,7 @@ func main() {
 		lastBestMoves = make(map[Move]bool)
 
 		startTime := time.Now()
-		iterativeDeepening(game.Position(), 7, &pst, isWhite)
+		iterativeDeepening(game.Position(), 10, &pst, isWhite)
 		elapsed := time.Since(startTime)
 		fmt.Printf("BENCH: nodes=%d, leafNodes=%d, quiescenceNodes=%d, evaluationDone=%d, \npositionUpdateCalls=%d, LMRresearches=%d, aspirationResearches=%d, nullMovePrunes=%d time=%v\n", nodesVisited, leafNodesVisited, quiescenceNodesVisited, evaluateFunctionCalls, positionUpdateCalls, lmrResearches, aspirationResearches, nullMovePrunes, elapsed)
 		return
@@ -139,26 +139,7 @@ func main() {
 		fmt.Println(nextMove)
 		return
 	} else if os.Getenv("MODE") == "3" {
-		fmt.Println("Benchmarking")
-		fen, _ := chess.FEN("1rbqkbnr/pppppppp/8/8/1n1P4/2N1P3/PPP1NPPP/R1BQKB1R b KQk d3 0 4")
-		testGame := chess.NewGame(fen)
-		pst := initPST()
-		// vm := testGame.Position().ValidMoves()
-		pstptr := &pst
-		startTime := time.Now()
-		for i := 0; i < 10; i++ {
-			//Test Eval speed by evaluating the same position 1 million times.
-			// sinkErr = testGame.UnsafeMove(&vm[0], nil)
-			EvaluatePos(testGame.Position(), pstptr)
-		}
-		elapsedTime := time.Since(startTime)
-
-		fmt.Printf("BENCH: time=%v\n", elapsedTime)
-		fmt.Printf("timesFunctionRan=%d\n", 1000000)
-		fmt.Printf("evaluationDone=%d\n", evaluateFunctionCalls)
-		fmt.Printf("LMRresearches=%d\n", lmrResearches)
-		fmt.Printf("AspirationResearches=%d\n", aspirationResearches)
-		fmt.Printf("nullMovePrunes=%d\n", nullMovePrunes)
+		// *UNUSED
 		return
 	} else if os.Getenv("MODE") == "4" {
 		Benchmark()

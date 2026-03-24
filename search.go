@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -21,7 +22,7 @@ type moveWithScore struct {
 	move  *chess.Move
 	score int
 	// tie is a deterministic tie-breaker for stable move ordering across backends.
-	tie   int
+	tie int
 }
 
 // pickNextBestMove does one in-place selection step for partial ordering.
@@ -343,14 +344,14 @@ func rateAllMoves(position *chess.Position, depth uint8, pst *PST, isWhite bool,
 			// This quickly rejects moves that don't improve on alpha (or beta for black)
 
 			if isWhite {
-				score = minimax(child, depth-1, !isWhite, alpha, alpha+1, childHash, pst, true)
+				score = lmrMinimax(child, depth-1, !isWhite, alpha, alpha+1, childHash, pst, true, idx)
 				// Null-window fail-high: re-search with full window.
 				if score > alpha && score < beta {
 					aspirationResearches++
 					score = minimax(child, depth-1, !isWhite, alpha, beta, childHash, pst, true)
 				}
 			} else {
-				score = minimax(child, depth-1, !isWhite, beta-1, beta, childHash, pst, true)
+				score = lmrMinimax(child, depth-1, !isWhite, beta-1, beta, childHash, pst, true, idx)
 				// Null-window fail-low: re-search with full window.
 				if score > alpha && score < beta {
 					aspirationResearches++
@@ -416,6 +417,7 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 	bestMove := &chess.Move{}
 	bestScore := 0
 	prevScore := 0 // Used for aspiration window in next iteration
+	timeNow := time.Now()
 	for i := 0; i < int(maxDepth); i++ {
 		select {
 		case <-stopSearch:
@@ -427,7 +429,6 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 			return
 		default:
 			depth := uint8(i + 1)
-			timeNow := time.Now()
 			bestMove, bestScore = rateAllMoves(position, depth, pst, isWhite, prevScore, true)
 			elapsed := time.Since(timeNow).Seconds()
 			prevScore = bestScore // Store for next iteration's aspiration window
@@ -435,9 +436,9 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 			updatePredictedPVFromLine(position, lastPrincipalVariation)
 			lastBestMoves[Move{bestMove.S1(), bestMove.S2()}] = true
 			if len(lastPrincipalVariation) > 0 {
-				fmt.Printf("info depth %d score cp %d nodes %d nps %f pv %s\n", i+1, bestScore, nodesVisited, float64(nodesVisited)/elapsed, strings.Join(lastPrincipalVariation, " "))
+				fmt.Printf("info depth %d score cp %d nodes %d nps %d pv %s\n", i+1, bestScore, nodesVisited, int(math.Floor(float64(nodesVisited)/elapsed)), strings.Join(lastPrincipalVariation, " "))
 			} else {
-				fmt.Printf("info depth %d score cp  %d nodes %d nps %f\n", i+1, bestScore, nodesVisited, float64(nodesVisited)/elapsed)
+				fmt.Printf("info depth %d score cp  %d nodes %d nps %d\n", i+1, bestScore, nodesVisited, int(math.Floor(float64(nodesVisited)/elapsed)))
 			}
 		}
 	}
@@ -456,7 +457,7 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 func lmrMinimax(position *chess.Position, depth uint8, maximizer bool, alpha int, beta int, posHash uint64, pst *PST, allowNull bool, moveIdx int) int {
 	nodesVisited++
 	score := 0
-	if moveIdx >= lmrMoveIndex+6 && depth >= lmrMinDepth+2 {
+	if moveIdx >= rootLMRMoveIndex && depth >= rootLMRMinDepth {
 		if maximizer {
 			score = minimax(position, depth-1, maximizer, alpha, beta, posHash, pst, allowNull)
 			if score > alpha {

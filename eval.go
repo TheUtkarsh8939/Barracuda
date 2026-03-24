@@ -91,12 +91,10 @@ func phaseWeights(totalMaterial int) (int, int, int) {
 //     for being near the center (active king is critical in endgames).
 func EvaluatePos(position *chess.Position, pst *PST) int {
 	// Primary fast evaluator: bitboard-driven material, PST, pawn structure, and king activity.
-	bbRaw, err := position.MarshalBinary()
+	bitboards, err := position.MarshalBinary()
 	if err != nil {
 		fmt.Printf("Error in bitboard retrieval %v\n", err)
 	}
-	// Extract pawn bitboards for pawn structure evaluation.
-	bitboards := ExtractPieceBitboard(bbRaw)
 	wbb, bbb := bitboards[5], bitboards[11]
 	score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
 	if position.Status() == chess.Checkmate {
@@ -169,137 +167,139 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 		score += (-whiteDist + blackDist) * smartEndgameFactor / 4
 	}
 
-	// // Castling rights bonus: losing the right to castle permanently is a king safety risk.
-	// castleRights := position.CastleRights()
-	// if castleRights.CanCastle(chess.White, chess.KingSide) {
-	// 	score += 50
-	// }
-	// if castleRights.CanCastle(chess.White, chess.QueenSide) {
-	// 	score += 40
-	// }
-	// if castleRights.CanCastle(chess.Black, chess.KingSide) {
-	// 	score -= 50
-	// }
-	// if castleRights.CanCastle(chess.Black, chess.QueenSide) {
-	// 	score -= 40
-	// }
+	// Castling rights bonus: losing the right to castle permanently is a king safety risk.
+	//// castleRights := position.CastleRights()
+	//// if castleRights.CanCastle(chess.White, chess.KingSide) {
+	//// 	score += 50
+	//// }
+	//// if castleRights.CanCastle(chess.White, chess.QueenSide) {
+	//// 	score += 40
+	//// }
+	//// if castleRights.CanCastle(chess.Black, chess.KingSide) {
+	//// 	score -= 50
+	//// }
+	//// if castleRights.CanCastle(chess.Black, chess.QueenSide) {
+	//// 	score -= 40
+	//// }
 
 	return score
 }
 
+// !KEPT FOR LEGACY PURPOSES
 // EvaluatePos returns a static evaluation of the position in centipawns from White's perspective.
 // Positive = good for White, negative = good for Black.
-//
+
 // Components:
 //  1. Material: sum of all piece values on the board.
 //  2. Piece-Square Tables (PST): positional bonuses per piece per square.
 //  3. Castling rights: bonus for retaining the right to castle (king safety indicator).
 //  4. Endgame king centralization: as material drops, the winning side's king is rewarded
 //     for being near the center (active king is critical in endgames).
-func LegacyEvaluatePos(position *chess.Position, pst *PST) int {
-	// Reference evaluator kept for parity checks and benchmarking.
-	bbRaw, err := position.MarshalBinary()
-	if err != nil {
-		fmt.Printf("Error in bitboard retrieval %v\n", err)
-	}
-	// Extract pawn bitboards for pawn structure evaluation.
-	wbb, bbb := ExtractPawnBitboards(bbRaw)
-	score := (pawnStructure(wbb) - pawnStructure(bbb)) * 5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
-	if position.Status() == chess.Checkmate {
-		if position.Turn() == chess.White {
-			return -99999 // White is checkmated
-		} else {
-			return 99999 // Black is checkmated
-		}
-	}
-	evaluateFunctionCalls++
-	board := position.Board()
-	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
-	// Start at -200000 to cancel out both kings' values from the material total.
-	// We only want non-king material to drive the endgame detection index.
-	totalMaterial := -200000
-	//Get Pawn Bitboard
+// // func LegacyEvaluatePos(position *chess.Position, pst *PST) int {
+// // 	// Reference evaluator kept for parity checks and benchmarking.
+// // 	bbRaw, err := position.MarshalBinary()
+// // 	if err != nil {
+// // 		fmt.Printf("Error in bitboard retrieval %v\n", err)
+// // 	}
+// // 	// Extract pawn bitboards for pawn structure evaluation.
+// // 	wbb, bbb := ExtractPawnBitboards(bbRaw)
+// // 	score := (pawnStructure(wbb) - pawnStructure(bbb)) * 5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
+// // 	if position.Status() == chess.Checkmate {
+// // 		if position.Turn() == chess.White {
+// // 			return -99999 // White is checkmated
+// // 		} else {
+// // 			return 99999 // Black is checkmated
+// // 		}
+// // 	}
+// // 	evaluateFunctionCalls++
+// // 	board := position.Board()
+// // 	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
+// // 	// Start at -200000 to cancel out both kings' values from the material total.
+// // 	// We only want non-king material to drive the endgame detection index.
+// // 	totalMaterial := -200000
+// // 	//Get Pawn Bitboard
 
-	openingScore := 0
-	middleScore := 0
-	endScore := 0
-	// Iterate squares directly instead of calling SquareMap() to avoid map allocation.
-	for sq := 0; sq < 64; sq++ {
-		v := board.Piece(chess.Square(sq))
-		if v == chess.NoPiece {
-			continue
-		}
-		pieceColor := v.Color()
-		pieceType := v.Type()
-		// Square index is already flat [0,63] for PST lookup.
-		opening := pst[pstStart][pieceColor][pieceType][sq]
-		middle := pst[pstMiddle][pieceColor][pieceType][sq]
-		end := pst[pstEnd][pieceColor][pieceType][sq]
-		material := legacyPieceValues[pieceType]
-		totalMaterial += material
-		sc := material
-		pstSign := 1
-		// Negate score for Black pieces since we evaluate from White's perspective.
-		if pieceColor == chess.Black {
-			sc = -sc
-			pstSign = -1
-		}
-		// Track king positions for endgame centralization logic below.
-		if pieceType == chess.King {
-			if pieceColor == chess.White {
-				whiteKingFile = sq % 8
-				whiteKingRank = sq / 8
-			} else {
-				blackKingFile = sq % 8
-				blackKingRank = sq / 8
-			}
-		}
-		score += sc
-		openingScore += pstSign * opening
-		middleScore += pstSign * middle
-		endScore += pstSign * end
-	}
+// // 	openingScore := 0
+// // 	middleScore := 0
+// // 	endScore := 0
+// // 	// Iterate squares directly instead of calling SquareMap() to avoid map allocation.
+// // 	for sq := 0; sq < 64; sq++ {
+// // 		v := board.Piece(chess.Square(sq))
+// // 		if v == chess.NoPiece {
+// // 			continue
+// // 		}
+// // 		pieceColor := v.Color()
+// // 		pieceType := v.Type()
+// // 		// Square index is already flat [0,63] for PST lookup.
+// // 		opening := pst[pstStart][pieceColor][pieceType][sq]
+// // 		middle := pst[pstMiddle][pieceColor][pieceType][sq]
+// // 		end := pst[pstEnd][pieceColor][pieceType][sq]
+// // 		material := legacyPieceValues[pieceType]
+// // 		totalMaterial += material
+// // 		sc := material
+// // 		pstSign := 1
+// // 		// Negate score for Black pieces since we evaluate from White's perspective.
+// // 		if pieceColor == chess.Black {
+// // 			sc = -sc
+// // 			pstSign = -1
+// // 		}
+// // 		// Track king positions for endgame centralization logic below.
+// // 		if pieceType == chess.King {
+// // 			if pieceColor == chess.White {
+// // 				whiteKingFile = sq % 8
+// // 				whiteKingRank = sq / 8
+// // 			} else {
+// // 				blackKingFile = sq % 8
+// // 				blackKingRank = sq / 8
+// // 			}
+// // 		}
+// // 		score += sc
+// // 		openingScore += pstSign * opening
+// // 		middleScore += pstSign * middle
+// // 		endScore += pstSign * end
+// // 	}
 
-	// Endgame king centralization:
-	// As material depletes, kings should move toward the center to support pawns and give checkmate.
-	// endGameIndex rises as pieces come off the board; smartEndgameFactor is 0 in the middlegame
-	// and increases proportionally in the endgame.
-	// maxMaterial (7800) = sum of all non-king pieces in starting position:
-	// 2 queens (1800) + 4 rooks (2000) + 4 bishops (1200) + 4 knights (1200) + 16 pawns (1600)
-	const maxMaterial = 7800
-	endGameIndex := maxMaterial - totalMaterial
-	lastTotalMaterial = totalMaterial
-	wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
-	// Phase weights are normalized to 24.
-	score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
-	// Only activate endgame king centralization after ~4900 material is traded.
-	if endGameIndex > 4900 {
-		// Use integer-based distance approximation (Manhattan distance from center ~4.5).
-		// Multiply distances by 2 to work in half-squares and avoid float, center at (9,9).
-		blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
-		whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
-		smartEndgameFactor := (endGameIndex - 4900) // /100 * 50 => /2
-		// Reward White if Black's king is far from center and White's is close (and vice versa).
-		score += (-whiteDist + blackDist) * smartEndgameFactor / 4
-	}
+// // 	// Endgame king centralization:
+// // 	// As material depletes, kings should move toward the center to support pawns and give checkmate.
+// // 	// endGameIndex rises as pieces come off the board; smartEndgameFactor is 0 in the middlegame
+// // 	// and increases proportionally in the endgame.
+// // 	// maxMaterial (7800) = sum of all non-king pieces in starting position:
+// // 	// 2 queens (1800) + 4 rooks (2000) + 4 bishops (1200) + 4 knights (1200) + 16 pawns (1600)
+// // 	const maxMaterial = 7800
+// // 	endGameIndex := maxMaterial - totalMaterial
+// // 	lastTotalMaterial = totalMaterial
+// // 	wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
+// // 	// Phase weights are normalized to 24.
+// // 	score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
+// // 	// Only activate endgame king centralization after ~4900 material is traded.
+// // 	if endGameIndex > 4900 {
+// // 		// Use integer-based distance approximation (Manhattan distance from center ~4.5).
+// // 		// Multiply distances by 2 to work in half-squares and avoid float, center at (9,9).
+// // 		blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
+// // 		whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
+// // 		smartEndgameFactor := (endGameIndex - 4900) // /100 * 50 => /2
+// // 		// Reward White if Black's king is far from center and White's is close (and vice versa).
+// // 		score += (-whiteDist + blackDist) * smartEndgameFactor / 4
+// // 	}
 
-	// // Castling rights bonus: losing the right to castle permanently is a king safety risk.
-	// castleRights := position.CastleRights()
-	// if castleRights.CanCastle(chess.White, chess.KingSide) {
-	// 	score += 50
-	// }
-	// if castleRights.CanCastle(chess.White, chess.QueenSide) {
-	// 	score += 40
-	// }
-	// if castleRights.CanCastle(chess.Black, chess.KingSide) {
-	// 	score -= 50
-	// }
-	// if castleRights.CanCastle(chess.Black, chess.QueenSide) {
-	// 	score -= 40
-	// }
+// // 	// // Castling rights bonus: losing the right to castle permanently is a king safety risk.
+// // 	// castleRights := position.CastleRights()
+// // 	// if castleRights.CanCastle(chess.White, chess.KingSide) {
+// // 	// 	score += 50
+// // 	// }
+// // 	// if castleRights.CanCastle(chess.White, chess.QueenSide) {
+// // 	// 	score += 40
+// // 	// }
+// // 	// if castleRights.CanCastle(chess.Black, chess.KingSide) {
+// // 	// 	score -= 50
+// // 	// }
+// // 	// if castleRights.CanCastle(chess.Black, chess.QueenSide) {
+// // 	// 	score -= 40
+// // 	// }
 
-	return score
-}
+// // 	return score
+// // }
+//!LEGACY CODE ENDS
 
 // EvaluateMove scores a move for move ordering purposes — NOT for final evaluation.
 // Higher scores mean the move should be searched earlier, which increases alpha-beta cutoffs.

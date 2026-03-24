@@ -504,33 +504,20 @@ replaced with simple `if` comparisons.
 ## 5. Evaluation — `eval.go`
 
 ```go
-func EvaluatePos(position, pst) int  // Fast bitboard-based path
-func LegacyEvaluatePos(position, pst) int  // Original square-iteration path (for comparison)
+func EvaluatePos(position *chess.Position, pst *PST) int
 ```
 
 Returns a score in **centipawns** from White's perspective (positive = good for White,
 negative = good for Black). The primary `EvaluatePos` is a fast bitboard-based evaluator
-optimized for the recursive search hot path. A legacy square-iteration variant is retained
-for validation and benchmarking. Both implement the same evaluation components:
+optimized for the recursive search hot path.
 
 ### 5.1 Material
 
-The evaluator tracks material using one of two piece-value arrays depending on the evaluation path:
+The evaluator tracks material using a hardcoded piece-value array:
 
 ```go
 // Fast bitboard path: indexed by piece type only (King=0...Pawn=5)
-var pieceValues [6]int{
-    100000, // King
-    900,    // Queen
-    500,    // Rook
-    300,    // Bishop
-    300,    // Knight
-    100,    // Pawn
-}
-
-// Legacy path: indexed by chess.PieceType (NoPieceType=0, King=1, ..., Pawn=6)
-var legacyPieceValues [7]int{
-    0,      // NoPieceType (index 0)
+var pieceValues = [6]int{
     100000, // King
     900,    // Queen
     500,    // Rook
@@ -541,113 +528,78 @@ var legacyPieceValues [7]int{
 ```
 
 Every piece on the board contributes its value. Black pieces subtract, White add.
+Extracting piece counts uses fast popcount implementations: `bits.OnesCount64(whiteBB)`.
 
-**Previous version:** `pieceValues` was a `map[chess.PieceType]int`. Each lookup required
-Go map hashing (~10–15ns). Switching to flat arrays indexed by type eliminates this overhead.
-The bitboard path uses a denser indexing scheme (0–5) since it iterates bitboards directly,
-while the legacy path retains compatibility with the library's `PieceType` enum (0–6).
-
-### 5.2 Piece-Square Tables
-
-Each piece gets a **positional bonus** based on which square it occupies:
-
-```go
-positionalAdv := pst[pieceColor][pieceType][sq]
-```
-
-The PSTs encode human chess knowledge: knights are better in the center, rooks want
-open files and the 7th rank, etc. See `pst.go` for the full tables.
-
-**Board iteration:** `EvaluatePos` iterates all 64 squares using `Board().Piece(sq)`
-directly, skipping empty squares immediately:
-
-```go
-for sq := 0; sq < 64; sq++ {
-    v := board.Piece(chess.Square(sq))
-    if v == chess.NoPiece { continue }
-    // ... score the piece
-}
-```
-
-**Previous version:** Used `Board().SquareMap()` which allocates a `map[Square]Piece`
-on every call. CPU profiling showed `SquareMap()` consuming ~43% of total search time.
-Direct iteration avoids the map allocation entirely. The chess library's `Piece(sq)`
-checks 12 bitboards internally, so 64 × 12 = 768 bitboard checks — but this is cheaper
-than the map allocation and hashing overhead that `SquareMap` required.
-
-### 5.3 Phase-Blended Evaluation
+### 5.2 Phase-Blended Evaluation
 
 Barracuda keeps **three PST banks** (opening, middlegame, endgame) and blends them
 using phase weights derived from remaining material:
 
 ```go
-wopening, wmiddle, wend := phaseWeights(totalMaterial)
+wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
+// Phase weights are normalized to 24.
 score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
 ```
 
 This gives smoother transitions than a single PST and prevents abrupt evaluation jumps
 when material crosses a hard threshold.
 
-### 5.4 Endgame King Centralization
+### 5.3 Endgame King Centralization
 
 In the endgame, active kings are critical for escorting pawns and delivering checkmate.
 The eval rewards the side ahead for having a more central king:
 
 ```go
-const maxMaterial = 7800  // all non-king material at game start
-endGameIndex := maxMaterial - totalMaterial
-if endGameIndex > 4900 {
-    blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
-    whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
-    smartEndgameFactor := endGameIndex - 4900
-    score += (-whiteDist + blackDist) * smartEndgameFactor / 4
-}
+    const maxMaterial = 7800
+    endGameIndex := maxMaterial - totalMaterial
+    lastTotalMaterial = totalMaterial
+    wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
+    // Phase weights are normalized to 24.
+    score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
+    // Only activate endgame king centralization after ~4900 material is traded.
+    if endGameIndex > 4900 {
+        // Use integer-based distance approximation (Manhattan distance from center ~4.5).
+        // Multiply distances by 2 to work in half-squares and avoid float, center at (9,9).
+        blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
+        whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
+        smartEndgameFactor := (endGameIndex - 4900) // /100 * 50 => /2
+        // Reward White if Black's king is far from center and White's is close (and vice versa).
+        score += (-whiteDist + blackDist) * smartEndgameFactor / 4
+    }
 ```
 
-- `maxMaterial = 7800` (2×900 + 4×500 + 4×300 + 4×300 + 16×100)
 - Factor is **0** until ~4900 centipawns of material have been traded (halfway point)
-- After that it scales linearly, reaching ~29 at full endgame
-- Kings start at -200000 to cancel out of `totalMaterial` so king captures don't trigger
-  the endgame factor prematurely
+- After that it scales linearly
+- Pure integer approach: coordinates are doubled and `absInt()` replaces `math.Abs()`, eliminating all float64 operations from the evaluation hot path.
 
-**Previous version:** Used `math.Abs(4.5-float64(king.x))` with float64 arithmetic
-throughout. Now uses a pure integer approach: coordinates are doubled (center at 9,9
-instead of 4.5,4.5) and `absInt()` replaces `math.Abs()`, eliminating all float64
-operations from the evaluation hot path.
+### 5.4 Pawn Structure (`pawnStructure` in `pawn_structure.go`)
 
-### 5.5 Pawn Structure Helper (`doublePawns`)
-
-`eval.go` includes a helper:
+`eval.go` incorporates an advanced pawn structure evaluation:
 
 ```go
-func doublePawns(pawnBitboard uint64) int
+score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5
 ```
 
-It scans file masks and returns a penalty based on files containing 2+ pawns.
-This helper is currently benchmark/debug-oriented and not yet integrated into
-`EvaluatePos` scoring.
+The feature applies penalties and bonuses using pure bitboard operations:
+- **Doubled Pawns:** Penalizes 2+ pawns on the same file.
+- **Isolated / Half-open files:** Penalizes unsupported adjacent files.
+- **Pawn Chains:** Gives +2 positional bonuses for active pawn chains (pawns defended by supportive friendly pawns).
+The net score difference (White - Black) is scaled via a hardcoded `*5` multiplier to balance with material and PST scores.
 
-### 5.6 Bitboard-Based Evaluator Implementation
+### 5.5 Bitboard-Based Evaluator Implementation
 
-The primary `EvaluatePos` uses a **bitboard-based fast path** that iterates the engine's
-internal `[12]uint64` bitboards directly instead of checking every square. This path:
+The fast path iterates internal `[12]uint64` bitboards directly instead of checking every square. This path:
 
-- Extracts all 12 piece bitboards (White King, Queen, ..., Black Pawn) via `ExtractPieceBitboard()`
+- Extracts all 12 piece bitboards (White King, Queen, ..., Black Pawn) via `position.MarshalBinary()`.
 - Uses a low-bit iteration loop to sum PST scores for each piece:
   ```go
-  for {
+  for bitboard != 0 {
       idx := bits.TrailingZeros64(bitboard)
-      // ... accumulate PST[piece type][square] + piece value ...
+      score += pst[idx ^ 7]  // file-mirror correction for PST indexing
       bitboard &= bitboard - 1  // clear lowest bit
-      if bitboard == 0 { break }
   }
   ```
-- Internally maps square indices based on bitboard representation (accounting for file mirroring)
-- Applies material, phase-blended PST, and endgame king centralization identically to the legacy path
-
-**Comparison with legacy path:** The square-iteration (`LegacyEvaluatePos`) checks each of 64
-squares serially. The bitboard path only iterates occupied squares, which is faster in most
-positions. Both paths were cross-validated during development to ensure parity.
+- Internally maps square indices based on bitboard representation (accounting for file mirroring).
 
 **PST parameter and type alias:** Evaluation signatures now use `PST` type:
 ```go
@@ -1172,7 +1124,7 @@ startpos improved significantly after integrating multiple synergistic optimizat
 `main.go` currently multiplexes benchmark/debug entry paths behind the `MODE` env var:
 
 - `MODE=1`: depth-7 benchmark search from start position; prints node/eval counters.
-- `MODE=2`: debug path for `doublePawns` on a fixed FEN.
+- `MODE=2`: debug path for `pawnStructure` evaluation testing on fixed FENs.
 - `MODE=3`: lightweight repeated eval timing path.
 - `MODE=4`: comprehensive hot-function profiling (`Benchmark()` in `profiling.go`).
 - unset `MODE`: normal UCI loop.
@@ -1395,7 +1347,7 @@ The `castleRights` field encodes rights as a 4-bit mask:
 type Move struct {
     From       uint8  // Source square (0–63)
     To         uint8  // Destination square (0–63)
-    PieceType  uint8  // Moving piece: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4, King=5
+    PieceType  uint8  // Moving piece using 1-based indexing: Pawn=1, Knight=2, Bishop=3, Rook=4, Queen=5, King=6
     promoteTo  uint8  // Promotion piece type (0 if no promotion)
     isCapture  bool
     isCheck    bool
@@ -1468,19 +1420,20 @@ func (p *Position) MarshalBinary() ([]byte, error) {
 
 ### 16.4 Move Generation Algorithm
 
-`GenerateValidMoves(board Board) []Move` is the primary move generation entry point.
+`GenerateValidMoves(board Board) []Move` and `GenerateValidMovesInto(board Board, moveBuffer []Move)` are the primary move generation entry points. `GenerateValidMovesInto` prevents excessive slice allocations during deep recursive searches by efficiently reusing a pre-allocated capacity-64 buffer.
 
-**High-level strategy:**
+**High-level Direct Legal Move Generation strategy:**
 
-1. **Iterate piece types** (Pawns, Knights, Bishops, Rooks, Queens, Kings)
-2. **For each piece of the moving side:**
-   - Use pre-computed magic bitboards or attack tables to find all legal destination squares
-   - Filter out moves that leave the king in check
-3. **Escape moves from check** (if the side is in check):
+The engine aggressively pre-calculates legal bounds (check masks, pins) to directly generate legal moves:
+1. **Pre-compute Constraints:** Computes `checkers` and `pinRays` before attempting any generation.
+2. **Double Check Evasion:** If there's a double check, skip all piece generation except the King.
+3. **Iterate piece types** (Pawns, Knights, Bishops, Rooks, Queens, Kings)
+4. **For each piece of the moving side:**
+   - Constrain moves onto the `checkMask` (if in single check) or respective pin rays (if pinned) to avoid pseudo-legal generation that leaves the king in check.
+   - Use pre-computed magic bitboards or attack tables to find all legal destination squares.
+5. **Escape moves from check** (if the side is in check):
    - Generate all moves that block or capture the attacking piece
-   - (Single-check moves only; double-check must move the king)
-4. **Encode each move** as a `Move` struct with flags (Capture, Check, EnPassant, Castle)
-5. **Return all legal moves** as a `[]Move` slice
+6. **Encode each move** as a `Move` struct with flags (Capture, Check, EnPassant, Castle). Note that check flags can be toggled to save computation time via `annotateChecksInMoveGen`.
 
 **Attack table usage:**
 
@@ -1511,8 +1464,7 @@ rays square-by-square.
 func NewBoardFromFEN(fen string) *Board
 ```
 
-Parses a standard FEN string and initializes all 12 bitboards, castle rights, en passant square,
-halfmove clock, and fullmove number in one pass.
+Parses a standard FEN string and initializes all 12 bitboards directly, perfectly populating the core `Board` structure. It parses algebraic notation to the `enPassant` integer, extracts boolean side-to-move turn parameters, maps string castling text to the internal 4-bit `castleRights` mask, and extracts halfmove/fullmove clocks in one pass. It provides proper error handling and returns `nil` for malformed FEN strings.
 
 **Move Application (`Board.Update`):**
 
