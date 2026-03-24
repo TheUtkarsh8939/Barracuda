@@ -131,12 +131,15 @@ func main() {
 		fmt.Printf("BENCH: nodes=%d, leafNodes=%d, quiescenceNodes=%d, evaluationDone=%d, \npositionUpdateCalls=%d, LMRresearches=%d, aspirationResearches=%d, nullMovePrunes=%d time=%v\n", nodesVisited, leafNodesVisited, quiescenceNodesVisited, evaluateFunctionCalls, positionUpdateCalls, lmrResearches, aspirationResearches, nullMovePrunes, elapsed)
 		return
 	} else if os.Getenv("MODE") == "2" {
+		// movesToAlgebraicNotation([]*chess.Move{
+
+		// })
 		//TEST OPENING BOOK
 		game := chess.NewGame()
 		applyMovesUCI(game, []string{"c2c4"})
 		book := initBook()
-		nextMove := findNextMove(moveArray, book)
-		fmt.Println(nextMove)
+		nextMove := findNextMove([]string{}, book)
+		fmt.Printf("Next move in book is: %s\n", nextMove)
 		return
 	} else if os.Getenv("MODE") == "3" {
 		// *UNUSED
@@ -152,7 +155,7 @@ func main() {
 	// Initialize a new chess game and the piece-square table (PST) for evaluation.
 	game := chess.NewGame()
 	pst := initPST()
-	book := initBook() // Initialize the opening book once at startup, since it can be reused across multiple searches and is expensive to load.
+	// //book := initBook() // Initialize the opening book once at startup, since it can be reused across multiple searches and is expensive to load.
 	// Print engine identification information.
 	fmt.Println("id name Barracuda")
 	fmt.Println("id author Utkarsh Chandel")
@@ -195,18 +198,19 @@ func main() {
 			options := parseGoCmd(command)
 			searching = true
 			go func(pos *chess.Position, depth uint8, sideIsWhite bool) {
-				if len(moveArray) < 8 {
-					nextMove := findNextMove(moveArray, book)
-					if nextMove != "" {
-						fmt.Printf("info string found book move %s\n", nextMove)
-						fmt.Printf("bestmove %s\n", nextMove)
-						select {
-						case searchDone <- struct{}{}:
-						default:
-						}
-						return
-					}
-				}
+				// // if len(moveArray) < 8 {
+				// // 	nextMove := findNextMove(moveArray, book)
+				// // 	if nextMove != "" {
+				// // 		fmt.Printf("info string found book move %s\n", nextMove)
+				// // 		fmt.Printf("bestmove %s\n", nextMove)
+				// // 		select {
+				// // 		case searchDone <- struct{}{}:
+				// // 		default:
+				// // 		}
+				// // 		return
+				// // 	}
+				// // }
+
 				iterativeDeepening(pos, depth, &pst, sideIsWhite)
 				select {
 				case searchDone <- struct{}{}:

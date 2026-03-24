@@ -1508,200 +1508,76 @@ the library — the engine's code remains clean and portable.
 
 ## 17. Opening Book Integration — `opening_handler.go`
 
-The engine integrates ECO opening book support via the external `github.com/corentings/chess/v2/opening` library. 
-Rather than rewriting or replacing this dependency, a **legacy bridge pattern** is used to maintain compatibility 
-with the old chess library's `opening.BookECO.Possible(moves []*chess.Move)` API while the rest of the engine 
-uses the new bitboard library.
+The engine uses a highly efficient, custom text-based opening book system integrated cleanly with the bitboard engine. It replaces the old, heavy `opening.BookECO` dependency with a binary-searchable in-memory string list and a native SAN encloder.
 
-### 17.1 ECO Opening Book System
+### 17.1 Custom Text-Based Opening Book
 
-The `opening.BookECO` database contains hundreds of thousands of known opening lines organized by ECO code 
-(Encyclopaedia of Chess Openings). Each opening is a sequence of moves drawn from master games.
+Instead of relying on external ECO databases, the engine now reads directly from an `openings.txt` file containing hundreds of thousands of known opening sequences in standard algebraic notation (SAN).
 
-**How the book integration works:**
+**Initialization and Startup:**
 
-1. **Initialize the book once at startup**:
+1. **Load Book Once at Startup**:
    ```go
-   book := opening.NewBookECO()  // Loads ECO database from embedded resource
+   book := initBook()  // Parses openings.txt into *openingBook ([]string)
    ```
+2. **Parsing Strategy**:
+   - Opens `openings.txt` via `os.ReadFile`.
+   - Splits on newline (`\n`).
+   - Trims carriage returns and trailing whitespace.
+   - Pushes into a dynamically sized `[]string` array.
+   Since the input text file is lexicographically sorted, the array remains perfectly sorted in memory.
 
-2. **At each turn, query the book for the next move**:
-   ```go
-   nextMove := findNextMove(uciMoveHistory, book)
-   ```
-   - Input: `uciMoveHistory` is a `[]string` of UCI move tokens (e.g., `["e2e4", "c7c5", "g1f3"]`)
-   - Output: A single UCI move token (e.g., `"d2d4"`) or empty string if no book move exists
+### 17.2 Binary Search Lookup (`findNextMove`)
 
-3. **In the UCI command loop** (`main.go`):
-   ```go
-   if len(moveArray) < 8 {  // Consult book early game
-       bookMove := findNextMove(moveArray, book)
-       if bookMove != "" {
-           fmt.Printf("bestmove %s\n", bookMove)
-           return  // Skip expensive search
-       }
-   }
-   iterativeDeepening(pos, depth, pst, isWhite)  // Fall back to search
-   ```
+The core lookup algorithm, `findNextMove`, uses zero game-state allocation overhead while querying the book. It performs a **binary search prefix match** over the sorted `[]string` slice.
 
-### 17.2 Legacy Bridge Pattern
-
-The core challenge: the bitboard library's engine now uses UCI move strings (`[]string`), 
-but `opening.BookECO.Possible()` expects the old chess library's `[]*chess.Move` objects. 
-Rather than modifying the opening package, a **bridge function** converts between the two:
-
-**`buildLegacyMovesFromUCI(uciMoves []string) ([]*chess.Move, error)`:**
+**`findNextMove(algebraicMoves []string, book *openingBook) string`:**
 
 ```go
-func buildLegacyMovesFromUCI(uciMoves []string) ([]*chess.Move, error) {
-    game := chess.NewGame()  // Create temporary old-library game
-    legacyMoves := make([]*chess.Move, 0, len(uciMoves))
-    
-    for _, token := range uciMoves {
-        // Decode UCI token into old chess.Move using old library's API
-        mv, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), token)
-        if err != nil {
-            return nil, err
-        }
-        legacyMoves = append(legacyMoves, mv)
-        
-        // Apply move to keep the game state synchronized
-        if err := game.Move(mv, &chess.PushMoveOptions{}); err != nil {
-            return nil, err
-        }
-    }
-    return legacyMoves, nil
+// 1. Join current history: e.g., []string{"e4", "e5"} -> "e4 e5 "
+prefixWithSpace := strings.Join(queryMoves, " ") + " "
+
+// 2. Binary search endpoints to find all sequences sharing this prefix
+start := sort.Search(len(lines), func(i int) bool { return lines[i] >= prefix })
+end := sort.Search(len(lines), func(i int) bool { return lines[i] > prefix+"\xff" })
+
+// 3. Extract all valid continuations
+candidateNextMoves := make([]string, 0)
+for i := start; i < end; i++ {
+    lineMoves := strings.Fields(lines[i])
+    candidateNextMoves = append(candidateNextMoves, lineMoves[len(queryMoves)])
 }
+
+// 4. Fallback or pick random
+return candidateNextMoves[rng.Intn(len(candidateNextMoves))]
 ```
 
-This function:
-1. Creates a temporary `chess.Game` to track position state
-2. For each UCI move token (e.g., "e2e4"), decodes it into an old `chess.Move`
-3. Applies each move to the temporary game
-4. Returns the list of old-format moves
+Benefits:
+- **No move decoding** during lookup. History is just string arrays.
+- **Microsecond lookup times** using native `sort.Search`.
+- **Randomization:** Collects *all* continuations from the matching block and picks randomly, making engine play varied and unpredictable.
+- **Empty/No-match Fallback:** Dynamically falls back to choosing a random first move if the engine is out of book or starts without history.
 
-The decoder uses the current position state to disambiguate moves (e.g., multiple knights can 
-move to the same square in rare positions, though UCI should already be unambiguous).
+### 17.3 Native SAN Encoding Support
 
-**`findNextMove(uciMoves []string, book *opening.BookECO) string`:**
+To support returning algebraic notation cleanly out of the internal engine's subset without invoking corentings formats, the engine includes a native `movesToAlgebraicNotation` generator using `bitboardChess.Move`.
 
-```go
-func findNextMove(uciMoves []string, book *opening.BookECO) string {
-    // Convert UCI move history to old library format
-    moves, err := buildLegacyMovesFromUCI(uciMoves)
-    if err != nil {
-        return ""
-    }
+**`movesToAlgebraicNotation(moves []*chess.Move) ([]string, error)`:**
 
-    // Query opening book
-    openings := book.Possible(moves)
-    if len(openings) == 0 {
-        return ""  // No opening line matches
-    }
+Located in `library_extension.go`, this helper performs complete legal-move validation and Standard Algebraic Notation (SAN) string building natively.
+It constructs moves handling:
+- **Castling:** Converts king moves over two squares into `O-O` and `O-O-O`.
+- **Captures & En Passant:** Automatically inserts `x` (e.g., `dxe5`, `Nxe4`).
+- **Disambiguation:** Confirms if multiple identical pieces attack the same square by walking `GenerateValidMoves()` efficiently, appending file or rank chars as needed (e.g., `Nbd7` or `R1e3`).
+- **Promotions:** Appends `=Q`, `=R`, `=B`, `=N`.
+- **Checks and Checkmates:** Tests `isKingInCheckForSide` and `Status() == Checkmate` on the updated board to defensively add `+` or `#`.
 
-    // Extract moves from the first matching opening
-    pgn := openings[0].PGN()
-    pgnMoves := parsePGNMoves(pgn)
-    if len(pgnMoves) <= len(uciMoves) {
-        return ""  // Book line has ended
-    }
+### 17.4 Integration Advantages
 
-    // Return the next move in UCI format (PGN is parsed as UCI)
-    return pgnMoves[len(uciMoves)]
-}
-```
-
-This function:
-1. Converts UCI move history to old chess.Move format via `buildLegacyMovesFromUCI()`
-2. Queries the opening book with the converted moves
-3. If matches exist, parses the opening's PGN and returns the next move in the sequence
-4. Returns empty string if the book line has ended or no matches found
-
-**Why this pattern is necessary:**
-
-The opening book API is locked to `Book.Possible(moves []*chess.Move)` — we cannot change external signatures. 
-By keeping a minimal legacy import (`github.com/corentings/chess/v2` + `github.com/corentings/chess/v2/opening` 
-only for the opening package) and converting moves on-demand via the bridge, we avoid:
-- Rewriting the opening book library (impossible — it's external)
-- Forcing the entire engine to import the old library (performance regression)
-- Duplicating opening book data (massive binary burden)
-
-The cost is minimal: the bridge is only called 4–8 times per game (opening book rarely applies beyond move 8), 
-so the temporary `chess.Game` allocation and move decoding happen infrequently.
-
-### 17.3 UCI Move History Tracking
-
-The engine's main loop (`main.go`) now tracks move history as **UCI strings** instead of Move objects:
-
-```go
-var moveArray []string  // e.g., ["e2e4", "c7c5", "g1f3", ...]
-```
-
-**`applyMovesUCI(moveList []string, position *chess.Position)`:**
-
-For each UCI move token in the input (from the UCI `position` command), decode it and apply it.
-The decoded move is converted back to UCI format and appended to `moveArray`:
-
-```go
-for _, token := range moveList {
-    mv, _ := chess.Notation.Decode(chess.UCINotation{}, position, token)
-    position = position.Update(mv)
-    moveArray = append(moveArray, token)
-}
-```
-
-This approach keeps `moveArray` as pure UCI strings, avoiding any dependency on the chess Move type 
-in the core loop.
-
-**Benefits of this approach:**
-
-1. **Cleaner data flow:** The engine logic doesn't care about Move struct details; it works with move tokens
-2. **Reduced coupling:** Main loop doesn't need to know chess.Move layout or memory semantics
-3. **Efficient bridging:** To query the opening book, `findNextMove()` converts the string batch once, 
-   rather than converting individual Move objects throughout the loop
-4. **Stateless opening queries:** The opening book function is a pure function mapping `[]string → string`, 
-   with no side effects or parameter-passing complications
-
-**`parsePGNMoves(pgn string) []string`:**
-
-Extracts individual moves from a PGN (Portable Game Notation) string:
-
-```go
-func parsePGNMoves(pgn string) []string {
-    tokens := strings.Fields(pgn)
-    var moves []string
-
-    for _, token := range tokens {
-        // Skip move numbers (e.g., "1.", "2.", "...")
-        if strings.HasSuffix(token, ".") {
-            continue
-        }
-        // Skip any other non-move tokens
-        if token == "" || token == "*" {
-            continue
-        }
-        moves = append(moves, token)
-    }
-    return moves
-}
-```
-
-The parser:
-- Splits the PGN by whitespace
-- Skips move numbers (tokens ending with `.`, e.g., `1.`, `2.`)
-- Skips metadata and annotations
-- Returns a slice of move strings in algebraic notation (e.g., `["e2e4", "c7c5", "Nf3", ...]`)
-
-The parser handles both UCI-style moves (`e2e4`) and standard algebraic notation (`Nf3`, `O-O`).
-
-### 17.4 Integration Checklist
-
-- ✅ `opening_handler.go` imports both old (`github.com/corentings/chess/v2`) and new (`github.com/TheUtkarsh8939/bitboardChess`) libraries
-- ✅ Engine core files (`search.go`, `eval.go`, etc.) import only the new bitboard library (via compatibility layer)
-- ✅ Move history in `main.go` is `[]string` (UCI moves)
-- ✅ `findNextMove()` signature is `(uciMoves []string, book) → string`
-- ✅ Bridge function `buildLegacyMovesFromUCI()` handles conversion on-demand
-- ✅ No opening book functionality is modified; only the call site is adapted
+- ✅ `opening_handler.go` uses built-in slices, strings, and random selection instead of external bloated ECO libraries.
+- ✅ Move history in `main.go` remains purely string-driven during the book phase.
+- ✅ Elimination of the old `legacy bridge pattern` saves thousands of allocations per game.
+- ✅ Bitboard moves directly support robust translation into PGN-compatible output safely for book building or debugging.
 
 ---
 
