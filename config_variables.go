@@ -48,6 +48,19 @@ const (
 	// first, then confirmed at full depth only if they beat the current best.
 	lmrMoveIndex = 4
 
+	// rootLMRMinDepth is the minimum depth at which LMR is applied in the root search.
+	// Root moves are critical and have a high branching factor, so we want to be very conservative
+	// about applying LMR here. Setting this to a very high value effectively disables root LMR,
+	// which is a common choice among strong engines. If you want to experiment with root LMR,
+	// try values around 6-8 and watch for any drop in playing strength.
+	rootLMRMinDepth = 255
+
+	// rootLMRMoveIndex is the move index after which LMR is applied in the root search.
+	// Root moves are critical and have a high branching factor, so we want to be very conservative
+	// about applying LMR here. Setting this to a very high value effectively disables root LMR,
+	// which is a common choice among strong engines. If you want to experiment with root LMR,
+	// try values around 8-12 and watch for any drop in playing strength.
+	rootLMRMoveIndex = 255
 	// Null-move pruning settings. At sufficient depth, we search a "pass" move with
 	// reduced depth; if it still fails high/low, we can prune this node.
 	nullMoveMinDepth  = 3
@@ -57,7 +70,7 @@ const (
 	// aspirationMargin is the ±cp band around the previous iteration's score.
 	// Searches that fail outside this band are retried with full window [minScore, maxScore].
 	// Typical values are 15-50; higher values reduce re-searches but use wider windows.
-	aspiratingWindowMargin = 17
+	aspiratingWindowMargin = 30
 
 	// aspirationMinDepth is the minimum depth at which aspiration windows are applied.
 	// Shallower searches have less predictive value from previous iteration.

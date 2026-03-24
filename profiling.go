@@ -90,7 +90,7 @@ func Benchmark() {
 	move := &moves[0]
 	child := position.Update(move)
 	bb, _ := position.MarshalBinary()
-	wbb, _ := ExtractPawnBitboards(bb)
+	wbb := bb[5]
 	runBenchmark("MarshalBinary", benchmarkCalls, func(_ int) {
 		bb, _ = position.MarshalBinary()
 
@@ -104,9 +104,6 @@ func Benchmark() {
 
 	runBenchmark("Update", benchmarkCalls, func(_ int) {
 		benchPosSink = position.Update(move)
-	})
-	runBenchmark("EvaluatePos", benchmarkCalls, func(_ int) {
-		benchIntSink += LegacyEvaluatePos(position, &pst)
 	})
 	runBenchmark("FastEvaluatePos", benchmarkCalls, func(_ int) {
 		benchIntSink += EvaluatePos(position, &pst)

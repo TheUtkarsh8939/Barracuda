@@ -1,7 +1,6 @@
 package bitboardchess
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -400,7 +399,7 @@ func mirrorFilesInRanks(bb uint64) uint64 {
 	return bb
 }
 
-func (p *Position) MarshalBinary() ([]byte, error) {
+func (p *Position) MarshalBinary() ([12]uint64, error) {
 	// Legacy-compatible layout expected by the engine:
 	// WK, WQ, WR, WB, WN, WP, BK, BQ, BR, BB, BN, BP.
 	arr := [12]uint64{
@@ -417,11 +416,7 @@ func (p *Position) MarshalBinary() ([]byte, error) {
 		mirrorFilesInRanks(uint64(p.board.BlackKnights)),
 		mirrorFilesInRanks(uint64(p.board.BlackPawns)),
 	}
-	buf := make([]byte, 96)
-	for i := 0; i < 12; i++ {
-		binary.LittleEndian.PutUint64(buf[i*8:(i+1)*8], arr[i])
-	}
-	return buf, nil
+	return arr, nil
 }
 
 type Game struct {

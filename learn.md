@@ -504,33 +504,20 @@ replaced with simple `if` comparisons.
 ## 5. Evaluation — `eval.go`
 
 ```go
-func EvaluatePos(position, pst) int  // Fast bitboard-based path
-func LegacyEvaluatePos(position, pst) int  // Original square-iteration path (for comparison)
+func EvaluatePos(position *chess.Position, pst *PST) int
 ```
 
 Returns a score in **centipawns** from White's perspective (positive = good for White,
 negative = good for Black). The primary `EvaluatePos` is a fast bitboard-based evaluator
-optimized for the recursive search hot path. A legacy square-iteration variant is retained
-for validation and benchmarking. Both implement the same evaluation components:
+optimized for the recursive search hot path.
 
 ### 5.1 Material
 
-The evaluator tracks material using one of two piece-value arrays depending on the evaluation path:
+The evaluator tracks material using a hardcoded piece-value array:
 
 ```go
 // Fast bitboard path: indexed by piece type only (King=0...Pawn=5)
-var pieceValues [6]int{
-    100000, // King
-    900,    // Queen
-    500,    // Rook
-    300,    // Bishop
-    300,    // Knight
-    100,    // Pawn
-}
-
-// Legacy path: indexed by chess.PieceType (NoPieceType=0, King=1, ..., Pawn=6)
-var legacyPieceValues [7]int{
-    0,      // NoPieceType (index 0)
+var pieceValues = [6]int{
     100000, // King
     900,    // Queen
     500,    // Rook
@@ -541,113 +528,78 @@ var legacyPieceValues [7]int{
 ```
 
 Every piece on the board contributes its value. Black pieces subtract, White add.
+Extracting piece counts uses fast popcount implementations: `bits.OnesCount64(whiteBB)`.
 
-**Previous version:** `pieceValues` was a `map[chess.PieceType]int`. Each lookup required
-Go map hashing (~10–15ns). Switching to flat arrays indexed by type eliminates this overhead.
-The bitboard path uses a denser indexing scheme (0–5) since it iterates bitboards directly,
-while the legacy path retains compatibility with the library's `PieceType` enum (0–6).
-
-### 5.2 Piece-Square Tables
-
-Each piece gets a **positional bonus** based on which square it occupies:
-
-```go
-positionalAdv := pst[pieceColor][pieceType][sq]
-```
-
-The PSTs encode human chess knowledge: knights are better in the center, rooks want
-open files and the 7th rank, etc. See `pst.go` for the full tables.
-
-**Board iteration:** `EvaluatePos` iterates all 64 squares using `Board().Piece(sq)`
-directly, skipping empty squares immediately:
-
-```go
-for sq := 0; sq < 64; sq++ {
-    v := board.Piece(chess.Square(sq))
-    if v == chess.NoPiece { continue }
-    // ... score the piece
-}
-```
-
-**Previous version:** Used `Board().SquareMap()` which allocates a `map[Square]Piece`
-on every call. CPU profiling showed `SquareMap()` consuming ~43% of total search time.
-Direct iteration avoids the map allocation entirely. The chess library's `Piece(sq)`
-checks 12 bitboards internally, so 64 × 12 = 768 bitboard checks — but this is cheaper
-than the map allocation and hashing overhead that `SquareMap` required.
-
-### 5.3 Phase-Blended Evaluation
+### 5.2 Phase-Blended Evaluation
 
 Barracuda keeps **three PST banks** (opening, middlegame, endgame) and blends them
 using phase weights derived from remaining material:
 
 ```go
-wopening, wmiddle, wend := phaseWeights(totalMaterial)
+wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
+// Phase weights are normalized to 24.
 score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
 ```
 
 This gives smoother transitions than a single PST and prevents abrupt evaluation jumps
 when material crosses a hard threshold.
 
-### 5.4 Endgame King Centralization
+### 5.3 Endgame King Centralization
 
 In the endgame, active kings are critical for escorting pawns and delivering checkmate.
 The eval rewards the side ahead for having a more central king:
 
 ```go
-const maxMaterial = 7800  // all non-king material at game start
-endGameIndex := maxMaterial - totalMaterial
-if endGameIndex > 4900 {
-    blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
-    whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
-    smartEndgameFactor := endGameIndex - 4900
-    score += (-whiteDist + blackDist) * smartEndgameFactor / 4
-}
+    const maxMaterial = 7800
+    endGameIndex := maxMaterial - totalMaterial
+    lastTotalMaterial = totalMaterial
+    wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
+    // Phase weights are normalized to 24.
+    score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
+    // Only activate endgame king centralization after ~4900 material is traded.
+    if endGameIndex > 4900 {
+        // Use integer-based distance approximation (Manhattan distance from center ~4.5).
+        // Multiply distances by 2 to work in half-squares and avoid float, center at (9,9).
+        blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
+        whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
+        smartEndgameFactor := (endGameIndex - 4900) // /100 * 50 => /2
+        // Reward White if Black's king is far from center and White's is close (and vice versa).
+        score += (-whiteDist + blackDist) * smartEndgameFactor / 4
+    }
 ```
 
-- `maxMaterial = 7800` (2×900 + 4×500 + 4×300 + 4×300 + 16×100)
 - Factor is **0** until ~4900 centipawns of material have been traded (halfway point)
-- After that it scales linearly, reaching ~29 at full endgame
-- Kings start at -200000 to cancel out of `totalMaterial` so king captures don't trigger
-  the endgame factor prematurely
+- After that it scales linearly
+- Pure integer approach: coordinates are doubled and `absInt()` replaces `math.Abs()`, eliminating all float64 operations from the evaluation hot path.
 
-**Previous version:** Used `math.Abs(4.5-float64(king.x))` with float64 arithmetic
-throughout. Now uses a pure integer approach: coordinates are doubled (center at 9,9
-instead of 4.5,4.5) and `absInt()` replaces `math.Abs()`, eliminating all float64
-operations from the evaluation hot path.
+### 5.4 Pawn Structure (`pawnStructure` in `pawn_structure.go`)
 
-### 5.5 Pawn Structure Helper (`doublePawns`)
-
-`eval.go` includes a helper:
+`eval.go` incorporates an advanced pawn structure evaluation:
 
 ```go
-func doublePawns(pawnBitboard uint64) int
+score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5
 ```
 
-It scans file masks and returns a penalty based on files containing 2+ pawns.
-This helper is currently benchmark/debug-oriented and not yet integrated into
-`EvaluatePos` scoring.
+The feature applies penalties and bonuses using pure bitboard operations:
+- **Doubled Pawns:** Penalizes 2+ pawns on the same file.
+- **Isolated / Half-open files:** Penalizes unsupported adjacent files.
+- **Pawn Chains:** Gives +2 positional bonuses for active pawn chains (pawns defended by supportive friendly pawns).
+The net score difference (White - Black) is scaled via a hardcoded `*5` multiplier to balance with material and PST scores.
 
-### 5.6 Bitboard-Based Evaluator Implementation
+### 5.5 Bitboard-Based Evaluator Implementation
 
-The primary `EvaluatePos` uses a **bitboard-based fast path** that iterates the engine's
-internal `[12]uint64` bitboards directly instead of checking every square. This path:
+The fast path iterates internal `[12]uint64` bitboards directly instead of checking every square. This path:
 
-- Extracts all 12 piece bitboards (White King, Queen, ..., Black Pawn) via `ExtractPieceBitboard()`
+- Extracts all 12 piece bitboards (White King, Queen, ..., Black Pawn) via `position.MarshalBinary()`.
 - Uses a low-bit iteration loop to sum PST scores for each piece:
   ```go
-  for {
+  for bitboard != 0 {
       idx := bits.TrailingZeros64(bitboard)
-      // ... accumulate PST[piece type][square] + piece value ...
+      score += pst[idx ^ 7]  // file-mirror correction for PST indexing
       bitboard &= bitboard - 1  // clear lowest bit
-      if bitboard == 0 { break }
   }
   ```
-- Internally maps square indices based on bitboard representation (accounting for file mirroring)
-- Applies material, phase-blended PST, and endgame king centralization identically to the legacy path
-
-**Comparison with legacy path:** The square-iteration (`LegacyEvaluatePos`) checks each of 64
-squares serially. The bitboard path only iterates occupied squares, which is faster in most
-positions. Both paths were cross-validated during development to ensure parity.
+- Internally maps square indices based on bitboard representation (accounting for file mirroring).
 
 **PST parameter and type alias:** Evaluation signatures now use `PST` type:
 ```go
@@ -1172,7 +1124,7 @@ startpos improved significantly after integrating multiple synergistic optimizat
 `main.go` currently multiplexes benchmark/debug entry paths behind the `MODE` env var:
 
 - `MODE=1`: depth-7 benchmark search from start position; prints node/eval counters.
-- `MODE=2`: debug path for `doublePawns` on a fixed FEN.
+- `MODE=2`: debug path for `pawnStructure` evaluation testing on fixed FENs.
 - `MODE=3`: lightweight repeated eval timing path.
 - `MODE=4`: comprehensive hot-function profiling (`Benchmark()` in `profiling.go`).
 - unset `MODE`: normal UCI loop.
@@ -1395,7 +1347,7 @@ The `castleRights` field encodes rights as a 4-bit mask:
 type Move struct {
     From       uint8  // Source square (0–63)
     To         uint8  // Destination square (0–63)
-    PieceType  uint8  // Moving piece: Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4, King=5
+    PieceType  uint8  // Moving piece using 1-based indexing: Pawn=1, Knight=2, Bishop=3, Rook=4, Queen=5, King=6
     promoteTo  uint8  // Promotion piece type (0 if no promotion)
     isCapture  bool
     isCheck    bool
@@ -1468,19 +1420,20 @@ func (p *Position) MarshalBinary() ([]byte, error) {
 
 ### 16.4 Move Generation Algorithm
 
-`GenerateValidMoves(board Board) []Move` is the primary move generation entry point.
+`GenerateValidMoves(board Board) []Move` and `GenerateValidMovesInto(board Board, moveBuffer []Move)` are the primary move generation entry points. `GenerateValidMovesInto` prevents excessive slice allocations during deep recursive searches by efficiently reusing a pre-allocated capacity-64 buffer.
 
-**High-level strategy:**
+**High-level Direct Legal Move Generation strategy:**
 
-1. **Iterate piece types** (Pawns, Knights, Bishops, Rooks, Queens, Kings)
-2. **For each piece of the moving side:**
-   - Use pre-computed magic bitboards or attack tables to find all legal destination squares
-   - Filter out moves that leave the king in check
-3. **Escape moves from check** (if the side is in check):
+The engine aggressively pre-calculates legal bounds (check masks, pins) to directly generate legal moves:
+1. **Pre-compute Constraints:** Computes `checkers` and `pinRays` before attempting any generation.
+2. **Double Check Evasion:** If there's a double check, skip all piece generation except the King.
+3. **Iterate piece types** (Pawns, Knights, Bishops, Rooks, Queens, Kings)
+4. **For each piece of the moving side:**
+   - Constrain moves onto the `checkMask` (if in single check) or respective pin rays (if pinned) to avoid pseudo-legal generation that leaves the king in check.
+   - Use pre-computed magic bitboards or attack tables to find all legal destination squares.
+5. **Escape moves from check** (if the side is in check):
    - Generate all moves that block or capture the attacking piece
-   - (Single-check moves only; double-check must move the king)
-4. **Encode each move** as a `Move` struct with flags (Capture, Check, EnPassant, Castle)
-5. **Return all legal moves** as a `[]Move` slice
+6. **Encode each move** as a `Move` struct with flags (Capture, Check, EnPassant, Castle). Note that check flags can be toggled to save computation time via `annotateChecksInMoveGen`.
 
 **Attack table usage:**
 
@@ -1511,8 +1464,7 @@ rays square-by-square.
 func NewBoardFromFEN(fen string) *Board
 ```
 
-Parses a standard FEN string and initializes all 12 bitboards, castle rights, en passant square,
-halfmove clock, and fullmove number in one pass.
+Parses a standard FEN string and initializes all 12 bitboards directly, perfectly populating the core `Board` structure. It parses algebraic notation to the `enPassant` integer, extracts boolean side-to-move turn parameters, maps string castling text to the internal 4-bit `castleRights` mask, and extracts halfmove/fullmove clocks in one pass. It provides proper error handling and returns `nil` for malformed FEN strings.
 
 **Move Application (`Board.Update`):**
 
@@ -1556,200 +1508,76 @@ the library — the engine's code remains clean and portable.
 
 ## 17. Opening Book Integration — `opening_handler.go`
 
-The engine integrates ECO opening book support via the external `github.com/corentings/chess/v2/opening` library. 
-Rather than rewriting or replacing this dependency, a **legacy bridge pattern** is used to maintain compatibility 
-with the old chess library's `opening.BookECO.Possible(moves []*chess.Move)` API while the rest of the engine 
-uses the new bitboard library.
+The engine uses a highly efficient, custom text-based opening book system integrated cleanly with the bitboard engine. It replaces the old, heavy `opening.BookECO` dependency with a binary-searchable in-memory string list and a native SAN encloder.
 
-### 17.1 ECO Opening Book System
+### 17.1 Custom Text-Based Opening Book
 
-The `opening.BookECO` database contains hundreds of thousands of known opening lines organized by ECO code 
-(Encyclopaedia of Chess Openings). Each opening is a sequence of moves drawn from master games.
+Instead of relying on external ECO databases, the engine now reads directly from an `openings.txt` file containing hundreds of thousands of known opening sequences in standard algebraic notation (SAN).
 
-**How the book integration works:**
+**Initialization and Startup:**
 
-1. **Initialize the book once at startup**:
+1. **Load Book Once at Startup**:
    ```go
-   book := opening.NewBookECO()  // Loads ECO database from embedded resource
+   book := initBook()  // Parses openings.txt into *openingBook ([]string)
    ```
+2. **Parsing Strategy**:
+   - Opens `openings.txt` via `os.ReadFile`.
+   - Splits on newline (`\n`).
+   - Trims carriage returns and trailing whitespace.
+   - Pushes into a dynamically sized `[]string` array.
+   Since the input text file is lexicographically sorted, the array remains perfectly sorted in memory.
 
-2. **At each turn, query the book for the next move**:
-   ```go
-   nextMove := findNextMove(uciMoveHistory, book)
-   ```
-   - Input: `uciMoveHistory` is a `[]string` of UCI move tokens (e.g., `["e2e4", "c7c5", "g1f3"]`)
-   - Output: A single UCI move token (e.g., `"d2d4"`) or empty string if no book move exists
+### 17.2 Binary Search Lookup (`findNextMove`)
 
-3. **In the UCI command loop** (`main.go`):
-   ```go
-   if len(moveArray) < 8 {  // Consult book early game
-       bookMove := findNextMove(moveArray, book)
-       if bookMove != "" {
-           fmt.Printf("bestmove %s\n", bookMove)
-           return  // Skip expensive search
-       }
-   }
-   iterativeDeepening(pos, depth, pst, isWhite)  // Fall back to search
-   ```
+The core lookup algorithm, `findNextMove`, uses zero game-state allocation overhead while querying the book. It performs a **binary search prefix match** over the sorted `[]string` slice.
 
-### 17.2 Legacy Bridge Pattern
-
-The core challenge: the bitboard library's engine now uses UCI move strings (`[]string`), 
-but `opening.BookECO.Possible()` expects the old chess library's `[]*chess.Move` objects. 
-Rather than modifying the opening package, a **bridge function** converts between the two:
-
-**`buildLegacyMovesFromUCI(uciMoves []string) ([]*chess.Move, error)`:**
+**`findNextMove(algebraicMoves []string, book *openingBook) string`:**
 
 ```go
-func buildLegacyMovesFromUCI(uciMoves []string) ([]*chess.Move, error) {
-    game := chess.NewGame()  // Create temporary old-library game
-    legacyMoves := make([]*chess.Move, 0, len(uciMoves))
-    
-    for _, token := range uciMoves {
-        // Decode UCI token into old chess.Move using old library's API
-        mv, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), token)
-        if err != nil {
-            return nil, err
-        }
-        legacyMoves = append(legacyMoves, mv)
-        
-        // Apply move to keep the game state synchronized
-        if err := game.Move(mv, &chess.PushMoveOptions{}); err != nil {
-            return nil, err
-        }
-    }
-    return legacyMoves, nil
+// 1. Join current history: e.g., []string{"e4", "e5"} -> "e4 e5 "
+prefixWithSpace := strings.Join(queryMoves, " ") + " "
+
+// 2. Binary search endpoints to find all sequences sharing this prefix
+start := sort.Search(len(lines), func(i int) bool { return lines[i] >= prefix })
+end := sort.Search(len(lines), func(i int) bool { return lines[i] > prefix+"\xff" })
+
+// 3. Extract all valid continuations
+candidateNextMoves := make([]string, 0)
+for i := start; i < end; i++ {
+    lineMoves := strings.Fields(lines[i])
+    candidateNextMoves = append(candidateNextMoves, lineMoves[len(queryMoves)])
 }
+
+// 4. Fallback or pick random
+return candidateNextMoves[rng.Intn(len(candidateNextMoves))]
 ```
 
-This function:
-1. Creates a temporary `chess.Game` to track position state
-2. For each UCI move token (e.g., "e2e4"), decodes it into an old `chess.Move`
-3. Applies each move to the temporary game
-4. Returns the list of old-format moves
+Benefits:
+- **No move decoding** during lookup. History is just string arrays.
+- **Microsecond lookup times** using native `sort.Search`.
+- **Randomization:** Collects *all* continuations from the matching block and picks randomly, making engine play varied and unpredictable.
+- **Empty/No-match Fallback:** Dynamically falls back to choosing a random first move if the engine is out of book or starts without history.
 
-The decoder uses the current position state to disambiguate moves (e.g., multiple knights can 
-move to the same square in rare positions, though UCI should already be unambiguous).
+### 17.3 Native SAN Encoding Support
 
-**`findNextMove(uciMoves []string, book *opening.BookECO) string`:**
+To support returning algebraic notation cleanly out of the internal engine's subset without invoking corentings formats, the engine includes a native `movesToAlgebraicNotation` generator using `bitboardChess.Move`.
 
-```go
-func findNextMove(uciMoves []string, book *opening.BookECO) string {
-    // Convert UCI move history to old library format
-    moves, err := buildLegacyMovesFromUCI(uciMoves)
-    if err != nil {
-        return ""
-    }
+**`movesToAlgebraicNotation(moves []*chess.Move) ([]string, error)`:**
 
-    // Query opening book
-    openings := book.Possible(moves)
-    if len(openings) == 0 {
-        return ""  // No opening line matches
-    }
+Located in `library_extension.go`, this helper performs complete legal-move validation and Standard Algebraic Notation (SAN) string building natively.
+It constructs moves handling:
+- **Castling:** Converts king moves over two squares into `O-O` and `O-O-O`.
+- **Captures & En Passant:** Automatically inserts `x` (e.g., `dxe5`, `Nxe4`).
+- **Disambiguation:** Confirms if multiple identical pieces attack the same square by walking `GenerateValidMoves()` efficiently, appending file or rank chars as needed (e.g., `Nbd7` or `R1e3`).
+- **Promotions:** Appends `=Q`, `=R`, `=B`, `=N`.
+- **Checks and Checkmates:** Tests `isKingInCheckForSide` and `Status() == Checkmate` on the updated board to defensively add `+` or `#`.
 
-    // Extract moves from the first matching opening
-    pgn := openings[0].PGN()
-    pgnMoves := parsePGNMoves(pgn)
-    if len(pgnMoves) <= len(uciMoves) {
-        return ""  // Book line has ended
-    }
+### 17.4 Integration Advantages
 
-    // Return the next move in UCI format (PGN is parsed as UCI)
-    return pgnMoves[len(uciMoves)]
-}
-```
-
-This function:
-1. Converts UCI move history to old chess.Move format via `buildLegacyMovesFromUCI()`
-2. Queries the opening book with the converted moves
-3. If matches exist, parses the opening's PGN and returns the next move in the sequence
-4. Returns empty string if the book line has ended or no matches found
-
-**Why this pattern is necessary:**
-
-The opening book API is locked to `Book.Possible(moves []*chess.Move)` — we cannot change external signatures. 
-By keeping a minimal legacy import (`github.com/corentings/chess/v2` + `github.com/corentings/chess/v2/opening` 
-only for the opening package) and converting moves on-demand via the bridge, we avoid:
-- Rewriting the opening book library (impossible — it's external)
-- Forcing the entire engine to import the old library (performance regression)
-- Duplicating opening book data (massive binary burden)
-
-The cost is minimal: the bridge is only called 4–8 times per game (opening book rarely applies beyond move 8), 
-so the temporary `chess.Game` allocation and move decoding happen infrequently.
-
-### 17.3 UCI Move History Tracking
-
-The engine's main loop (`main.go`) now tracks move history as **UCI strings** instead of Move objects:
-
-```go
-var moveArray []string  // e.g., ["e2e4", "c7c5", "g1f3", ...]
-```
-
-**`applyMovesUCI(moveList []string, position *chess.Position)`:**
-
-For each UCI move token in the input (from the UCI `position` command), decode it and apply it.
-The decoded move is converted back to UCI format and appended to `moveArray`:
-
-```go
-for _, token := range moveList {
-    mv, _ := chess.Notation.Decode(chess.UCINotation{}, position, token)
-    position = position.Update(mv)
-    moveArray = append(moveArray, token)
-}
-```
-
-This approach keeps `moveArray` as pure UCI strings, avoiding any dependency on the chess Move type 
-in the core loop.
-
-**Benefits of this approach:**
-
-1. **Cleaner data flow:** The engine logic doesn't care about Move struct details; it works with move tokens
-2. **Reduced coupling:** Main loop doesn't need to know chess.Move layout or memory semantics
-3. **Efficient bridging:** To query the opening book, `findNextMove()` converts the string batch once, 
-   rather than converting individual Move objects throughout the loop
-4. **Stateless opening queries:** The opening book function is a pure function mapping `[]string → string`, 
-   with no side effects or parameter-passing complications
-
-**`parsePGNMoves(pgn string) []string`:**
-
-Extracts individual moves from a PGN (Portable Game Notation) string:
-
-```go
-func parsePGNMoves(pgn string) []string {
-    tokens := strings.Fields(pgn)
-    var moves []string
-
-    for _, token := range tokens {
-        // Skip move numbers (e.g., "1.", "2.", "...")
-        if strings.HasSuffix(token, ".") {
-            continue
-        }
-        // Skip any other non-move tokens
-        if token == "" || token == "*" {
-            continue
-        }
-        moves = append(moves, token)
-    }
-    return moves
-}
-```
-
-The parser:
-- Splits the PGN by whitespace
-- Skips move numbers (tokens ending with `.`, e.g., `1.`, `2.`)
-- Skips metadata and annotations
-- Returns a slice of move strings in algebraic notation (e.g., `["e2e4", "c7c5", "Nf3", ...]`)
-
-The parser handles both UCI-style moves (`e2e4`) and standard algebraic notation (`Nf3`, `O-O`).
-
-### 17.4 Integration Checklist
-
-- ✅ `opening_handler.go` imports both old (`github.com/corentings/chess/v2`) and new (`github.com/TheUtkarsh8939/bitboardChess`) libraries
-- ✅ Engine core files (`search.go`, `eval.go`, etc.) import only the new bitboard library (via compatibility layer)
-- ✅ Move history in `main.go` is `[]string` (UCI moves)
-- ✅ `findNextMove()` signature is `(uciMoves []string, book) → string`
-- ✅ Bridge function `buildLegacyMovesFromUCI()` handles conversion on-demand
-- ✅ No opening book functionality is modified; only the call site is adapted
+- ✅ `opening_handler.go` uses built-in slices, strings, and random selection instead of external bloated ECO libraries.
+- ✅ Move history in `main.go` remains purely string-driven during the book phase.
+- ✅ Elimination of the old `legacy bridge pattern` saves thousands of allocations per game.
+- ✅ Bitboard moves directly support robust translation into PGN-compatible output safely for book building or debugging.
 
 ---
 

@@ -1,89 +1,91 @@
 package main
 
 import (
+	"math/rand"
+	"os"
+	"sort"
 	"strings"
-
-	"github.com/corentings/chess/v2"
-	"github.com/corentings/chess/v2/opening"
+	"time"
 )
 
-func initBook() *opening.BookECO {
-	book := opening.NewBookECO()
+type openingBook []string
+
+func initBook() *openingBook {
+	book := &openingBook{}
+
+	data, err := os.ReadFile("./openings.txt")
+	if err != nil {
+		return book
+	}
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		*book = append(*book, strings.TrimRight(line, " \t\r"))
+	}
+
 	return book
 }
 
-// parsePGNMoves extracts move strings from a PGN string.
-// Removes move numbers (like "1.", "2.") and returns just the moves.
-func parsePGNMoves(pgn string) []string {
-	tokens := strings.Fields(pgn)
-	var moves []string
-
-	for _, token := range tokens {
-		// Skip move numbers (e.g., "1.", "2.", "...")
-		if strings.HasSuffix(token, ".") {
+func randomOpeningMove(lines []string, rng *rand.Rand) string {
+	firstMoves := make([]string, 0)
+	for _, line := range lines {
+		moves := strings.Fields(line)
+		if len(moves) == 0 {
 			continue
 		}
-		// Skip any other non-move tokens (like annotations or comments)
-		if token == "" || token == "*" {
-			continue
-		}
-		moves = append(moves, token)
+		firstMoves = append(firstMoves, moves[0])
 	}
 
-	return moves
-}
-
-func buildLegacyMovesFromUCI(uciMoves []string) ([]*chess.Move, error) {
-	game := chess.NewGame()
-	legacyMoves := make([]*chess.Move, 0, len(uciMoves))
-	for _, token := range uciMoves {
-		mv, err := chess.Notation.Decode(chess.UCINotation{}, game.Position(), token)
-		if err != nil {
-			return nil, err
-		}
-		legacyMoves = append(legacyMoves, mv)
-		if err := game.Move(mv, &chess.PushMoveOptions{}); err != nil {
-			return nil, err
-		}
-	}
-	return legacyMoves, nil
-}
-
-func findNextMove(uciMoves []string, book *opening.BookECO) string {
-	moves, err := buildLegacyMovesFromUCI(uciMoves)
-	if err != nil {
+	if len(firstMoves) == 0 {
 		return ""
 	}
 
-	openings := book.Possible(moves)
-	if len(openings) == 0 {
+	return firstMoves[rng.Intn(len(firstMoves))]
+}
+
+func findNextMove(algebraicMoves []string, book *openingBook) string {
+	if book == nil || len(*book) == 0 {
 		return ""
 	}
 
-	// Loop through all matching openings to find the next move
-	for _, openingLine := range openings {
-		// Get the PGN and parse it to extract moves
-		pgn := openingLine.PGN()
-		pgnMoves := parsePGNMoves(pgn)
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	lines := *book
 
-		// The next move is at index len(moves)
-		if len(pgnMoves) > len(moves) {
-			// Convert PGN move notation to chess.Move
-			// We need a position to decode the notation
-			game := chess.NewGame()
-			for i := 0; i < len(moves); i++ {
-				game.Move(moves[i], &chess.PushMoveOptions{})
-			}
-
-			// Decode the next move in PGN notation
-			nextMoveStr := pgnMoves[len(moves)]
-			moveObj, err := chess.AlgebraicNotation{}.Decode(game.Position(), nextMoveStr)
-			if err == nil {
-				return moveObj.String()
-			}
-		}
+	queryMoves := algebraicMoves
+	if len(queryMoves) == 0 {
+		return randomOpeningMove(lines, rng)
 	}
 
-	// No valid next move found in any opening
-	return ""
+	prefix := strings.Join(queryMoves, " ")
+	prefixWithSpace := prefix + " "
+
+	// In the sorted book, all strings with the same prefix are contiguous.
+	start := sort.Search(len(lines), func(i int) bool {
+		return lines[i] >= prefix
+	})
+	end := sort.Search(len(lines), func(i int) bool {
+		return lines[i] > prefix+"\xff"
+	})
+
+	candidateNextMoves := make([]string, 0)
+	for i := start; i < end; i++ {
+		line := lines[i]
+		if line != prefix && !strings.HasPrefix(line, prefixWithSpace) {
+			continue
+		}
+
+		lineMoves := strings.Fields(line)
+		if len(lineMoves) <= len(queryMoves) {
+			continue
+		}
+		candidateNextMoves = append(candidateNextMoves, lineMoves[len(queryMoves)])
+	}
+
+	if len(candidateNextMoves) == 0 {
+		return randomOpeningMove(lines, rng)
+	}
+
+	// Randomly select one matching opening and return its next move.
+	return candidateNextMoves[rng.Intn(len(candidateNextMoves))]
 }
