@@ -40,7 +40,7 @@ func pawnStructure(pawnBitboard uint64) int {
 	}
 
 	// Bonus for pawn chains: a pawn gets +2 if defended by a pawn on
-	// bottom-left or bottom-right (white attack geometry in A1=LSB mapping).
+	// bottom-left or bottom-right (white attack geometry in H1=LSB mapping).
 	const fileA uint64 = 0x0101010101010101
 	const fileH uint64 = 0x8080808080808080
 	defendedPawns := pawnBitboard & (((pawnBitboard << 7) &^ fileH) | ((pawnBitboard << 9) &^ fileA))

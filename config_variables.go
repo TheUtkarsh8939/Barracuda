@@ -82,6 +82,12 @@ const (
 
 	//Mate Score, an arbitrary large value to represent checkmate in the evaluation. The exact value is not critical as long as it's larger than any possible material evaluation, and allows for depth-based adjustments to prefer faster mates.
 	mateScore = 99999
+
+	//DrawScore
+	drawScore = -50 // A small negative value to represent a draw in the evaluation. This encourages the engine to prefer winning moves over drawing ones, while still recognizing that a draw is better than losing. The exact value can be tuned based on the engine's playing style and risk tolerance.
+
+	//Max LMR reduction
+	maxLMRReduction = 3
 )
 
 //QUIESCENCE SEARCH CONSTANTS

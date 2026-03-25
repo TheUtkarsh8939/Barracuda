@@ -80,6 +80,19 @@ func phaseWeights(totalMaterial int) (int, int, int) {
 	return startWeight, midWeight, endWeight
 }
 
+// EvaluateBishopAndRookPair returns a bonus score for having a pair of bishops or rooks on the same file.
+func EvaluateBishopAndRookPair(bb uint64) int {
+	score := 0
+	for i := range fileMasks {
+		mask := fileMasks[i]
+		masked := bb & mask
+		if bits.OnesCount64(masked) > 1 {
+			score += 10 // Bonus for having a pair of bishops or rooks on the same file, as they can control it together.
+		}
+	}
+	return score
+}
+
 // EvaluatePos returns a static evaluation of the position in centipawns from White's perspective.
 // Positive = good for White, negative = good for Black.
 //
@@ -96,7 +109,10 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 		fmt.Printf("Error in bitboard retrieval %v\n", err)
 	}
 	wbb, bbb := bitboards[5], bitboards[11]
-	score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 20 to scale it appropriately with material and PST scores.
+	score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5                                             //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 5 to scale it appropriately with material and PST scores.
+	score += (EvaluateBishopAndRookPair(bitboards[2]) - EvaluateBishopAndRookPair(bitboards[8])) * 2 // Bonus for rook pairs on the same file.
+	score += (EvaluateBishopAndRookPair(bitboards[3]) - EvaluateBishopAndRookPair(bitboards[9])) * 2 // Bonus for bishop pairs on the same file.
+
 	evaluateFunctionCalls++
 	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
 	if bitboards[0] != 0 {

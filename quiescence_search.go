@@ -17,7 +17,7 @@ import (
 //
 // The depth parameter limits the quiescence search to prevent explosion
 // (positions with many forced captures could recurse very deeply otherwise).
-func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *PST) int {
+func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *PST, ply int) int {
 	// Count qsearch nodes separately while still contributing to global node count.
 	quiescenceNodesVisited++
 	nodesVisited++
@@ -42,7 +42,19 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		}
 
 		vm := pos.ValidMoves()
-
+		//*CHECKMATE/STALEMATE CHECK: if there are no legal moves, the position is either checkmate or stalemate.
+		if len(vm) == 0 {
+			// No legal moves: checkmate or stalemate. Return the appropriate score.
+			if chess.IsCheck(*pos.Board()) {
+				if pos.Turn() == chess.White {
+					return -mateScore + ply // Losing position, penalize longer mates.
+				} else {
+					return mateScore - ply
+				}
+			} else {
+				return -50 // Stalemate is a draw.
+			}
+		}
 		max_Eval := stand_eval
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
@@ -57,7 +69,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 					}
 				}
 				newPos := pos.Update(&move)
-				eval := quiescence_search(newPos, alpha, beta, false, depth-1, pst)
+				eval := quiescence_search(newPos, alpha, beta, false, depth-1, pst, ply+1)
 				if eval > alpha {
 					alpha = eval
 				}
@@ -82,7 +94,19 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		}
 
 		vm := pos.ValidMoves()
-
+		//*CHECKMATE/STALEMATE CHECK: if there are no legal moves, the position is either checkmate or stalemate.
+		if len(vm) == 0 {
+			// No legal moves: checkmate or stalemate. Return the appropriate score.
+			if chess.IsCheck(*pos.Board()) {
+				if pos.Turn() == chess.White {
+					return -mateScore + ply // Losing position, penalize longer mates.
+				} else {
+					return mateScore - ply
+				}
+			} else {
+				return -50 // Stalemate is a draw.
+			}
+		}
 		minEval := stand_eval
 		for _, move := range vm {
 			// Only explore captures and checks — quiet moves are ignored.
@@ -97,7 +121,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 					}
 				}
 				newPos := pos.Update(&move)
-				eval := quiescence_search(newPos, alpha, beta, true, depth-1, pst)
+				eval := quiescence_search(newPos, alpha, beta, true, depth-1, pst, ply+1)
 				if eval < beta {
 					beta = eval
 				}

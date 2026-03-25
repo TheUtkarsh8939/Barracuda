@@ -126,7 +126,7 @@ func main() {
 		lastBestMoves = make(map[Move]bool)
 
 		startTime := time.Now()
-		iterativeDeepening(game.Position(), 7, &pst, isWhite)
+		iterativeDeepening(game.Position(), 9, &pst, isWhite)
 		elapsed := time.Since(startTime)
 		fmt.Printf("BENCH: nodes=%d, leafNodes=%d, quiescenceNodes=%d, evaluationDone=%d, \npositionUpdateCalls=%d, LMRresearches=%d, aspirationResearches=%d, nullMovePrunes=%d time=%v\n", nodesVisited, leafNodesVisited, quiescenceNodesVisited, evaluateFunctionCalls, positionUpdateCalls, lmrResearches, aspirationResearches, nullMovePrunes, elapsed)
 		return

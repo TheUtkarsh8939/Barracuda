@@ -77,8 +77,8 @@ func runBenchmark(functionName string, calls int, fn func(iter int)) {
 func Benchmark() {
 	fmt.Println("Starting profiling benchmarks...")
 	fmt.Printf("Calls per function: %d\n\n", benchmarkCalls)
-
-	game := chess.NewGame()
+	fen, _ := chess.FEN("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 3")
+	game := chess.NewGame(fen)
 	position := game.Position()
 	pst := initPST()
 	rootHash := fastPosHash(position)
@@ -101,7 +101,6 @@ func Benchmark() {
 	runBenchmark("ValidMoves", benchmarkCalls, func(_ int) {
 		benchIntSink += len(position.ValidMoves())
 	})
-
 	runBenchmark("Update", benchmarkCalls, func(_ int) {
 		benchPosSink = position.Update(move)
 	})
@@ -134,8 +133,8 @@ func Benchmark() {
 		benchIntSink += transpositionTable[key&ttMask].score
 	})
 
-	runBenchmark("quiescence_search_depth1", benchmarkCalls, func(_ int) {
-		benchIntSink += quiescence_search(position, minScore, maxScore, true, 1, &pst)
+	runBenchmark("quiescence_search_depth4", benchmarkCalls, func(_ int) {
+		benchIntSink += quiescence_search(position, minScore, maxScore, true, 4, &pst, 0)
 	})
 
 	fmt.Println("Profiling benchmarks complete.")
