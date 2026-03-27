@@ -103,3 +103,6 @@ Barracuda is in active search-quality and performance tuning, with emphasis on:
 - Added detailed profiling and benchmarking modes to identify bottlenecks and guide optimizations - _Better understanding of performance characteristics_
 - Implemented efficient incremental hashing for fast position updates - _Used XOR Self inverse to create an incremental hash that can be updated in O(1) time for moves and unmoves_
 - Wrote a custom Backend replacing Old `github.com/corentings/chess/v2` Backend for faster move generation and position updates - _Jump from 350k nodes per second to 1.2M nodes per second_
+
+## Special Thanks
+- Special Thanks to [Tarrasch GUI](https://www.triplehappy.com/) for providing a portable open source chess GUI under allowing me to distribute Barracuda with a GUI for easier demonstration, releases of Barracuda are bundled with Tarrasch GUI for easy testing and demonstration of Barracuda's capabilities.
