@@ -109,7 +109,8 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 		fmt.Printf("Error in bitboard retrieval %v\n", err)
 	}
 	wbb, bbb := bitboards[5], bitboards[11]
-	score := pawnStructure(wbb)*5 - pawnStructure(bbb)*5                                             //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 5 to scale it appropriately with material and PST scores.
+	score := pawnStructure(wbb)*7 - pawnStructure(bbb)*7 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 7 to scale it appropriately with material and PST scores.
+
 	score += (EvaluateBishopAndRookPair(bitboards[2]) - EvaluateBishopAndRookPair(bitboards[8])) * 2 // Bonus for rook pairs on the same file.
 	score += (EvaluateBishopAndRookPair(bitboards[3]) - EvaluateBishopAndRookPair(bitboards[9])) * 2 // Bonus for bishop pairs on the same file.
 
@@ -164,33 +165,44 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 	lastTotalMaterial = totalMaterial
 	wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
 	// Phase weights are normalized to 24.
-	score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
+	score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 18
 	// Only activate endgame king centralization after ~4900 material is traded.
-	if endGameIndex > 4900 {
+	if endGameIndex > 4800 {
 		// Use integer-based distance approximation (Manhattan distance from center ~4.5).
 		// Multiply distances by 2 to work in half-squares and avoid float, center at (9,9).
 		blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
 		whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
-		smartEndgameFactor := (endGameIndex - 4900) // /100 * 50 => /2
+		smartEndgameFactor := (endGameIndex - 4800) // /100 * 50 => /2
 		// Reward White if Black's king is far from center and White's is close (and vice versa).
 		score += (-whiteDist + blackDist) * smartEndgameFactor / 4
+	} else {
+		// In non endgame postions reward distance from centers
+		blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
+		whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
+		score += (whiteDist - blackDist) * 4
 	}
+	// Soft passed-pawn pressure: rewards pawns that are close to becoming passed.
+	passedPawnPotentialWeight := 20                                      //Ranges from 0-20 depending on material traded
+	endgamePawnsWhite, endgamePawnsBlack := (wbb>>32)<<32, (bbb<<32)>>32 // Only consider pawns on the opponent's half of the board for passed-pawn potential, as central pawns are more likely to become passed and create threats.This also reduces noise during opening from pawns that are still far from promotion and unlikely to become passed for many moves.
+	score += (PassedPawnPotentialScore(endgamePawnsWhite, bbb, chess.White) - PassedPawnPotentialScore(endgamePawnsBlack, wbb, chess.Black)) * passedPawnPotentialWeight
+	score += kingNearOpenFiles(wbb, bitboards[0]) * 5
+	score -= kingNearOpenFiles(bbb, bitboards[6]) * 5
+	score += rookOnOpenFiles(wbb|bbb, bitboards[2]) * 3
+	score -= rookOnOpenFiles(wbb|bbb, bitboards[8]) * 3
 
 	// Castling rights bonus: losing the right to castle permanently is a king safety risk.
-	//// castleRights := position.CastleRights()
-	//// if castleRights.CanCastle(chess.White, chess.KingSide) {
-	//// 	score += 50
-	//// }
-	//// if castleRights.CanCastle(chess.White, chess.QueenSide) {
-	//// 	score += 40
-	//// }
-	//// if castleRights.CanCastle(chess.Black, chess.KingSide) {
-	//// 	score -= 50
-	//// }
-	//// if castleRights.CanCastle(chess.Black, chess.QueenSide) {
-	//// 	score -= 40
-	//// }
-
+	if position.CanCastle(chess.White, chess.KingSide) {
+		score += 50
+	}
+	if position.CanCastle(chess.White, chess.QueenSide) {
+		score += 40
+	}
+	if position.CanCastle(chess.Black, chess.KingSide) {
+		score -= 50
+	}
+	if position.CanCastle(chess.Black, chess.QueenSide) {
+		score -= 40
+	}
 	return score
 }
 

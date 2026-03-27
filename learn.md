@@ -40,25 +40,26 @@
 10. [Principal Variation Store � `pv_store.go`](#10-principal-variation-store--pv_storego)
 11. [Utilities � `misc.go`](#11-utilities--miscgo)
 12. [UCI Protocol � `main.go` & `ucihelper.go`](#12-uci-protocol--maingo--ucihelpergo)
-13. [Data Flow: One Full Search Cycle](#13-data-flow-one-full-search-cycle)
-14. [Performance Notes & Optimization History](#14-performance-notes--optimization-history)
-    - 14.1 [Runtime Modes (`MODE=1..4`)](#141-runtime-modes-mode14)
-    - 14.2 [Profiling Harness (`profiling.go`)](#142-profiling-harness-profilinggo)
-15. [Known Gaps & What to Implement Next](#15-known-gaps--what-to-implement-next)
-16. [Configuration: Centralized Tuning Constants](#16-configuration-centralized-tuning-constants)
-17. [Bitboard Library Architecture � `bitboardChess/`](#17-bitboard-library-architecture--bitboardchess)
-    - 17.1 [Overview & Design Rationale](#171-overview--design-rationale)
-    - 17.2 [Core Data Structures](#172-core-data-structures)
-    - 17.3 [Compatibility API Layer](#173-compatibility-api-layer)
-    - 17.4 [Move Generation Algorithm](#174-move-generation-algorithm)
-    - 17.5 [Board State Representation](#175-board-state-representation)
-    - 17.6 [Integration with Engine](#176-integration-with-engine)
-18. [Opening Book Integration � `opening_handler.go`](#18-opening-book-integration--opening_handlergo)
-    - 18.1 [Custom Text-Based Opening Book](#181-custom-text-based-opening-book)
-    - 18.2 [Binary Search Lookup (`findNextMove`)](#182-binary-search-lookup-findnextmove)
-    - 18.3 [Bidirectional Move Format Converters](#183-bidirectional-move-format-converters)
-    - 18.4 [Integration Advantages](#184-integration-advantages)
-19. [Build Instructions](#19-build-instructions)
+13. [Time Management & UCI Limits — `time_control.go`](#13-time-management--uci-limits--time_controlgo)
+14. [Data Flow: One Full Search Cycle](#14-data-flow-one-full-search-cycle)
+15. [Performance Notes & Optimization History](#15-performance-notes--optimization-history)
+    - 15.1 [Runtime Modes (`MODE=1..4`)](#141-runtime-modes-mode14)
+    - 15.2 [Profiling Harness (`profiling.go`)](#142-profiling-harness-profilinggo)
+16. [Known Gaps & What to Implement Next](#16-known-gaps--what-to-implement-next)
+17. [Configuration: Centralized Tuning Constants](#17-configuration-centralized-tuning-constants)
+18. [Bitboard Library Architecture � `bitboardChess/`](#17-bitboard-library-architecture--bitboardchess)
+    - 18.1 [Overview & Design Rationale](#171-overview--design-rationale)
+    - 18.2 [Core Data Structures](#172-core-data-structures)
+    - 18.3 [Compatibility API Layer](#173-compatibility-api-layer)
+    - 18.4 [Move Generation Algorithm](#174-move-generation-algorithm)
+    - 18.5 [Board State Representation](#175-board-state-representation)
+    - 18.6 [Integration with Engine](#176-integration-with-engine)
+19. [Opening Book Integration � `opening_handler.go`](#18-opening-book-integration--opening_handlergo)
+    - 19.1 [Custom Text-Based Opening Book](#181-custom-text-based-opening-book)
+    - 19.2 [Binary Search Lookup (`findNextMove`)](#182-binary-search-lookup-findnextmove)
+    - 19.3 [Bidirectional Move Format Converters](#183-bidirectional-move-format-converters)
+    - 19.4 [Integration Advantages](#184-integration-advantages)
+20. [Build Instructions](#19-build-instructions)
 
 ---
 
@@ -1001,7 +1002,53 @@ For `go infinite`, parser sets `depth=255`.
 
 ---
 
-## 13. Data Flow: One Full Search Cycle
+## 13. Time Management & UCI Limits — `time_control.go`
+
+Time management ensures the engine plays effectively under tournament constraints (e.g., wtime/inc or movetime). It dictates when to embark on the next iterative deepening depth (softDeadline) and when to abruptly abort an ongoing search (hardDeadline).
+
+### 13.1 SearchControl & Context
+
+A global SearchControl struct manages the active search budget, relying on Go's context.Context for thread-safe cancellation across goroutines:
+
+```go
+type SearchControl struct {
+    ctx          context.Context
+    cancel       context.CancelFunc
+    enabled      bool
+    softDeadline time.Time
+    hardDeadline time.Time
+}
+```
+
+When a new UCI go command arrives, NewSearchControl() computes the budget:
+- **Movetime mode**: Hard deadline = moveTime - timeControlSafetyBufferMs.
+- **Tournament clock mode**: Time remaining divided by a presumed movesToGo (default 20), plus a fraction of the increment. 
+- **Soft budget limit**: The softDeadline limits time spent per iteration (e.g., 85% of hard deadline) so the engine gracefully concludes search depths rather than aborting mid-way.
+
+### 13.2 Soft vs Hard Deadlines
+
+| Type | Polled Where | Action |
+|---|---|---|
+| **Soft Deadline** | iterativeDeepening (before starting a new depth) | Determines whether there is enough time to start the *next* depth (returns safely if not). |
+| **Hard Deadline** | Core loops in search.go / quiescence_search.go | Forces an immediate abortion of the current search tree (cancel() is called) to prevent a timeout. |
+
+### 13.3 Periodic Concurrency Polling
+
+Polling `time.Now()` at every node would incur a massive OS syscall overhead. Instead, deadlines are only evaluated periodically using a bitmask check:
+
+```go
+if nodeCount & searchStopCheckMask == 0 {
+    // Check time limits and GUI stop commands every ~1024 nodes
+    if s.shouldStopInSearch(nodeCount) { 
+        return true
+    }
+}
+```
+If interrupted, the deep recursive calls unwind gracefully and return the static evaluation, ensuring the engine retains structural consistency and still emits the last fully-verified estmove.
+
+---
+
+## 14. Data Flow: One Full Search Cycle
 
 ```
 GUI sends: "go depth 6"
@@ -1035,7 +1082,7 @@ go iterativeDeepening(pos, 6, pst, isWhite)
 
 ---
 
-## 14. Performance Notes & Optimization History
+## 15. Performance Notes & Optimization History
 
 ### Round 1 — Initial optimizations
 
@@ -1167,15 +1214,9 @@ OS-specific CPU readers:
 
 ---
 
-## 15. Known Gaps & What to Implement Next
+## 16. Known Gaps & What to Implement Next
 
 ### High Priority
-
-**Time management**
-`SearchOptions` parses `wtime`, `btime`, `winc`, `binc` but they are never used in the
-search loop. A proper time manager should allocate roughly `remaining_time / (moves_to_go + buffer)`
-per move and interrupt iterative deepening via `stopSearch` when the budget expires. This is
-essential for competitive play on fast time controls.
 
 **History heuristic**
 Track which quiet moves caused beta cutoffs across the whole search (not just at the same
@@ -1192,7 +1233,7 @@ currently misjudges evaluation.
 
 ---
 
-## 16. Configuration: Centralized Tuning Constants
+## 17. Configuration: Centralized Tuning Constants
 
 All engine tuning parameters are defined in a single file: `config_variables.go`.
 
@@ -1237,9 +1278,9 @@ When experimenting with optimizations:
 2. Run `MODE=1` benchmark to measure nodes/time impact
 3. Log successful tuning results in `learn.md` and commit changes
 
-## 17. Bitboard Library Architecture — `bitboardChess/`
+## 18. Bitboard Library Architecture — `bitboardChess/`
 
-### 17.1 Overview & Design Rationale
+### 18.1 Overview & Design Rationale
 
 Barracuda uses a custom, high-performance bitboard library (`github.com/TheUtkarsh8939/bitboardChess`)
 for position representation and move generation. This library was chosen to replace the external
@@ -1286,7 +1327,7 @@ This decoupling allows the core engine files (`search.go`, `eval.go`, `hashing.g
 largely unchanged after the library swap — they compile against the same API signatures,
 but now backed by the fast bitboard implementation.
 
-### 17.2 Core Data Structures
+### 18.2 Core Data Structures
 
 #### Bitboard (`uint64`)
 
@@ -1369,7 +1410,7 @@ Access methods (defined in compatibility layer):
 - `Move.Promo()` → promotion piece type (or `NoPieceType`)
 - `Move.HasTag(tag)` → true if move has flag (Capture, Check, EnPassant, etc.)
 
-### 17.3 Compatibility API Layer
+### 18.3 Compatibility API Layer
 
 The `bitboardChess/compatibility_api.go` file (576 lines) provides a complete adapter layer
 that translates the engine's chess v2 API calls onto the bitboard implementation. Key types:
@@ -1425,7 +1466,7 @@ func (p *Position) MarshalBinary() ([]byte, error) {
 }
 ```
 
-### 17.4 Move Generation Algorithm
+### 18.4 Move Generation Algorithm
 
 `GenerateValidMoves(board Board) []Move` and `GenerateValidMovesInto(board Board, moveBuffer []Move)` are the primary move generation entry points. `GenerateValidMovesInto` prevents excessive slice allocations during deep recursive searches by efficiently reusing a pre-allocated capacity-64 buffer.
 
@@ -1463,7 +1504,7 @@ The magic bitboard technique uses pre-computed hash functions to instantly compu
 sliding-piece attacks even with obstacles. This is significantly faster than scanning
 rays square-by-square.
 
-### 17.5 Board State Representation
+### 18.5 Board State Representation
 
 **FEN Parsing (`NewBoardFromFEN`):**
 
@@ -1491,7 +1532,7 @@ Applies a move to the board, handling:
 
 Returns the new `Board` state or an error if the move is invalid.
 
-### 17.6 Integration with Engine
+### 18.6 Integration with Engine
 
 The engine interacts with the bitboard library exclusively through the compatibility layer:
 
@@ -1513,11 +1554,11 @@ the library — the engine's code remains clean and portable.
 
 ---
 
-## 18. Opening Book Integration — `opening_handler.go`
+## 19. Opening Book Integration — `opening_handler.go`
 
 The engine uses a highly efficient, custom text-based opening book system integrated cleanly with the bitboard engine. It replaces the old, heavy `opening.BookECO` dependency with a binary-searchable in-memory string list and a native SAN encloder.
 
-### 18.1 Custom Text-Based Opening Book
+### 19.1 Custom Text-Based Opening Book
 
 Instead of relying on external ECO databases, the engine now reads directly from an `openings.txt` file containing hundreds of thousands of known opening sequences in standard algebraic notation (SAN).
 
@@ -1534,7 +1575,7 @@ Instead of relying on external ECO databases, the engine now reads directly from
    - Pushes into a dynamically sized `[]string` array.
    Since the input text file is lexicographically sorted, the array remains perfectly sorted in memory.
 
-### 18.2 Binary Search Lookup (`findNextMove`)
+### 19.2 Binary Search Lookup (`findNextMove`)
 
 The core lookup algorithm, `findNextMove`, uses zero game-state allocation overhead while querying the book. It performs a **binary search prefix match** over the sorted `[]string` slice.
 
@@ -1565,7 +1606,7 @@ Benefits:
 - **Randomization:** Collects *all* continuations from the matching block and picks randomly, making engine play varied and unpredictable.
 - **Empty/No-match Fallback:** Dynamically falls back to choosing a random first move if the engine is out of book or starts without history.
 
-### 18.3 Bidirectional Move Format Converters
+### 19.3 Bidirectional Move Format Converters
 
 To operate entirely inside the internal engine's bitboard subset without invoking the `corentings` formats for book and GUI communications, `library_extension.go` implements two custom format converters connecting algebraic and UCI notations.
 
@@ -1595,7 +1636,7 @@ Once a book move is fetched as SAN, it must be relayed back through the UCI prot
 - Normalizes and matches them against the provided SAN token.
 - Handles resolving exact hits natively and outputs the matched move as its robust raw UCI command ready to be sent to the GUI or `applyMovesUCI`.
 
-### 18.4 Integration Advantages
+### 19.4 Integration Advantages
 
 - ✅ `opening_handler.go` uses built-in slices, strings, and random selection instead of external bloated ECO libraries.
 - ✅ Move history seamlessly flows between Bitboard structures, standard SAN lookup prefixes, and UCI GUI strings.
@@ -1604,7 +1645,7 @@ Once a book move is fetched as SAN, it must be relayed back through the UCI prot
 
 ---
 
-## 19. Build Instructions
+## 20. Build Instructions
 
 ### Standard build
 

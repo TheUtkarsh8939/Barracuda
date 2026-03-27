@@ -139,6 +139,10 @@ const (
 	G8 Square = 62
 	H8 Square = 63
 )
+const (
+	KingSide = iota
+	QueenSide
+)
 
 func (p Piece) Type() PieceType {
 	switch p {
@@ -568,4 +572,20 @@ func (AlgebraicNotation) Decode(p *Position, san string) (*Move, error) {
 		}
 	}
 	return nil, errors.New("SAN decode not available in compatibility mode")
+}
+func (p *Position) CanCastle(color Color, side int) bool {
+	rights := p.board.castleRights
+	if color == White && side == KingSide {
+		return rights&castleWhiteKing != 0
+	}
+	if color == White && side == QueenSide {
+		return rights&castleWhiteQueen != 0
+	}
+	if color == Black && side == KingSide {
+		return rights&castleBlackKing != 0
+	}
+	if color == Black && side == QueenSide {
+		return rights&castleBlackQueen != 0
+	}
+	return false
 }

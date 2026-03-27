@@ -17,10 +17,13 @@ import (
 //
 // The depth parameter limits the quiescence search to prevent explosion
 // (positions with many forced captures could recurse very deeply otherwise).
-func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *PST, ply int) int {
+func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool, depth uint8, pst *PST, ply int, control *SearchControl) int {
 	// Count qsearch nodes separately while still contributing to global node count.
 	quiescenceNodesVisited++
 	nodesVisited++
+	if control != nil && control.shouldStopInSearch(nodesVisited) {
+		return EvaluatePos(pos, pst)
+	}
 	// Stand-pat evaluation: the score if we make no more captures ("stand pat").
 	stand_eval := EvaluatePos(pos, pst)
 
@@ -57,6 +60,9 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		}
 		max_Eval := stand_eval
 		for _, move := range vm {
+			if control != nil && control.shouldStopInSearch(nodesVisited) {
+				break
+			}
 			// Only explore captures and checks — quiet moves are ignored.
 			if move.HasTag(chess.Capture) || move.HasTag(chess.Check) {
 				// Delta pruning: if even winning the captured piece can't raise us to alpha, skip.
@@ -69,7 +75,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 					}
 				}
 				newPos := pos.Update(&move)
-				eval := quiescence_search(newPos, alpha, beta, false, depth-1, pst, ply+1)
+				eval := quiescence_search(newPos, alpha, beta, false, depth-1, pst, ply+1, control)
 				if eval > alpha {
 					alpha = eval
 				}
@@ -109,6 +115,9 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 		}
 		minEval := stand_eval
 		for _, move := range vm {
+			if control != nil && control.shouldStopInSearch(nodesVisited) {
+				break
+			}
 			// Only explore captures and checks — quiet moves are ignored.
 			if move.HasTag(chess.Capture) || move.HasTag(chess.Check) {
 				// Delta pruning (minimizer): if even winning the captured piece can't lower us to beta, skip.
@@ -121,7 +130,7 @@ func quiescence_search(pos *chess.Position, alpha int, beta int, maximizer bool,
 					}
 				}
 				newPos := pos.Update(&move)
-				eval := quiescence_search(newPos, alpha, beta, true, depth-1, pst, ply+1)
+				eval := quiescence_search(newPos, alpha, beta, true, depth-1, pst, ply+1, control)
 				if eval < beta {
 					beta = eval
 				}

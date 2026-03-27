@@ -91,6 +91,18 @@ func Benchmark() {
 	child := position.Update(move)
 	bb, _ := position.MarshalBinary()
 	wbb := bb[5]
+	bitboards, _ := position.MarshalBinary()
+	wbb, bbb := bitboards[5], bitboards[11]
+	runBenchmark("OpenFilesEval", benchmarkCalls, func(_ int) {
+
+		passedPawnPotentialWeight := 20                                      //Ranges from 0-20 depending on material traded
+		endgamePawnsWhite, endgamePawnsBlack := (wbb>>32)<<32, (bbb<<32)>>32 // Only consider pawns on the opponent's half of the board for passed-pawn potential, as central pawns are more likely to become passed and create threats.This also reduces noise during opening from pawns that are still far from promotion and unlikely to become passed for many moves.
+		benchIntSink += (PassedPawnPotentialScore(endgamePawnsWhite, bbb, chess.White) - PassedPawnPotentialScore(endgamePawnsBlack, wbb, chess.Black)) * passedPawnPotentialWeight
+		benchIntSink += kingNearOpenFiles(wbb, bitboards[0]) * 5
+		benchIntSink -= kingNearOpenFiles(bbb, bitboards[6]) * 5
+		benchIntSink += rookOnOpenFiles(wbb|bbb, bitboards[2]) * 3
+		benchIntSink -= rookOnOpenFiles(wbb|bbb, bitboards[8]) * 3
+	})
 	runBenchmark("MarshalBinary", benchmarkCalls, func(_ int) {
 		bb, _ = position.MarshalBinary()
 
@@ -134,7 +146,7 @@ func Benchmark() {
 	})
 
 	runBenchmark("quiescence_search_depth4", benchmarkCalls, func(_ int) {
-		benchIntSink += quiescence_search(position, minScore, maxScore, true, 4, &pst, 0)
+		benchIntSink += quiescence_search(position, minScore, maxScore, true, 4, &pst, 0, nil)
 	})
 
 	fmt.Println("Profiling benchmarks complete.")

@@ -18,7 +18,7 @@ import (
 // Current search launcher primarily uses depth/infinite; clock fields are parsed for future time management.
 func parseGoCmd(cmd string) *SearchOptions {
 	result := &SearchOptions{}
-	tokens := strings.Split(cmd, " ")
+	tokens := strings.Fields(cmd)
 	for i, token := range tokens {
 		option := token
 		// Safely peek at the next token as the value for this option.
@@ -41,6 +41,10 @@ func parseGoCmd(cmd string) *SearchOptions {
 			result.binc, _ = strconv.Atoi(value)
 		} else if option == "winc" {
 			result.winc, _ = strconv.Atoi(value)
+		} else if option == "movetime" {
+			result.moveTime, _ = strconv.Atoi(value)
+		} else if option == "movestogo" {
+			result.movesToGo, _ = strconv.Atoi(value)
 		}
 	}
 	return result

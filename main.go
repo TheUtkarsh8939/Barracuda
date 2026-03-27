@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	chess "github.com/TheUtkarsh8939/bitboardChess"
@@ -21,6 +22,32 @@ var nullMovePrunes int = 0         // Count of how many times null-move pruning 
 
 var moveArray []string
 var stopSearch = make(chan bool, 1) // Buffered to avoid deadlocks when no search goroutine is waiting.
+var activeSearchMu sync.Mutex
+var activeSearchControl *SearchControl
+
+func setActiveSearchControl(control *SearchControl) {
+	activeSearchMu.Lock()
+	activeSearchControl = control
+	activeSearchMu.Unlock()
+}
+
+func clearActiveSearchControl(control *SearchControl) {
+	activeSearchMu.Lock()
+	if activeSearchControl == control {
+		activeSearchControl = nil
+	}
+	activeSearchMu.Unlock()
+}
+
+func stopActiveSearch() {
+	activeSearchMu.Lock()
+	control := activeSearchControl
+	activeSearchControl = nil
+	activeSearchMu.Unlock()
+	if control != nil {
+		control.Cancel()
+	}
+}
 
 func clearStopSignals() {
 	for {
@@ -33,6 +60,7 @@ func clearStopSignals() {
 }
 
 func requestStopSearch() {
+	stopActiveSearch()
 	select {
 	case stopSearch <- true:
 	default:
@@ -126,7 +154,7 @@ func main() {
 		lastBestMoves = make(map[Move]bool)
 
 		startTime := time.Now()
-		iterativeDeepening(game.Position(), 9, &pst, isWhite)
+		iterativeDeepening(game.Position(), 9, &pst, isWhite, nil)
 		elapsed := time.Since(startTime)
 		fmt.Printf("BENCH: nodes=%d, leafNodes=%d, quiescenceNodes=%d, evaluationDone=%d, \npositionUpdateCalls=%d, LMRresearches=%d, aspirationResearches=%d, nullMovePrunes=%d time=%v\n", nodesVisited, leafNodesVisited, quiescenceNodesVisited, evaluateFunctionCalls, positionUpdateCalls, lmrResearches, aspirationResearches, nullMovePrunes, elapsed)
 		return
@@ -201,8 +229,23 @@ func main() {
 			clearStopSignals()
 			isWhite := game.Position().Turn() == chess.White
 			options := parseGoCmd(command)
+			maxDepth := options.depth
+			if options.isInf || maxDepth == 0 {
+				maxDepth = defaultTimedMaxDepth
+			}
+			control := NewSearchControl(options, isWhite)
+			setActiveSearchControl(control)
 			searching = true
-			go func(pos *chess.Position, depth uint8, sideIsWhite bool) {
+			go func(pos *chess.Position, depth uint8, sideIsWhite bool, sc *SearchControl) {
+				defer func() {
+					select {
+					case searchDone <- struct{}{}:
+					default:
+					}
+				}()
+				defer sc.Cancel()
+				defer clearActiveSearchControl(sc)
+
 				if len(moveArray) < 8 {
 					moves := game.Moves()
 					sanMoves, err := movesToAlgebraicNotation(moves)
@@ -223,12 +266,8 @@ func main() {
 					}
 				}
 
-				iterativeDeepening(pos, depth, &pst, sideIsWhite)
-				select {
-				case searchDone <- struct{}{}:
-				default:
-				}
-			}(game.Position(), options.depth, isWhite)
+				iterativeDeepening(pos, depth, &pst, sideIsWhite, sc)
+			}(game.Position(), maxDepth, isWhite, control)
 		} else if command == "quit" {
 			// Handle the "quit" command to exit the program.
 			requestStopSearch()

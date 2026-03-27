@@ -25,6 +25,7 @@ type SearchOptions struct {
 	isInf     bool  // True if "go infinite" was received
 	binc      int   // Black's time increment per move in ms
 	winc      int   // White's time increment per move in ms
+	movesToGo int   // Optional UCI moves-to-go hint before next time control
 }
 
 // InsertionSort sorts a move slice in-place using the provided comparator.

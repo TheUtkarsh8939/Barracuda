@@ -1,6 +1,6 @@
 package main
 
-//TRANSPOSITION TABLE CONSTANTS
+// TRANSPOSITION TABLE CONSTANTS
 // ttSize is the number of entries in the array-based transposition table.
 // Must be a power of 2 so we can use bitwise AND for fast index computation.
 const ttSize = 1 << 20 // 1,048,576 entries
@@ -10,7 +10,7 @@ const (
 	ttBoundUpper
 )
 
-//PST CONSTANTS
+// PST CONSTANTS
 const (
 	pstStart = iota
 	pstMiddle
@@ -88,13 +88,25 @@ const (
 
 	//Max LMR reduction
 	maxLMRReduction = 3
+
+	// Search depth used when UCI command is time-based (no explicit fixed depth).
+	defaultTimedMaxDepth = 255
+
+	// Time-control tuning constants.
+	timeControlSafetyBufferMs = 25
+	timeControlMinThinkMs     = 10
+	timeSoftBudgetPercent     = 85
+	timeDefaultMovesToGo      = 30
+
+	// Check stop/deadline every (mask+1) nodes inside hot loops.
+	searchStopCheckMask = 1023
 )
 
-//QUIESCENCE SEARCH CONSTANTS
+// QUIESCENCE SEARCH CONSTANTS
 // deltaMargin is the safety margin for delta pruning in quiescence search.
 // If the static eval plus the value of the captured piece plus this margin
 // cannot reach alpha, the capture is futile and can be skipped.
 const deltaMargin = 200
 
-//PROFILING CONSTANTS
+// PROFILING CONSTANTS
 const benchmarkCalls = 1000000
