@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"math/bits"
 
 	chess "github.com/TheUtkarsh8939/bitboardChess"
@@ -93,26 +92,26 @@ func EvaluateBishopAndRookPair(bb uint64) int {
 	return score
 }
 
-// EvaluatePos returns a static evaluation of the position in centipawns from White's perspective.
-// Positive = good for White, negative = good for Black.
+// EvaluatePos returns a static centipawn evaluation from White's perspective.
+// Positive scores favor White, negative scores favor Black.
 //
-// Components:
-//  1. Material: sum of all piece values on the board.
-//  2. Piece-Square Tables (PST): positional bonuses per piece per square.
-//  3. Pawn Structure: evaluates doubled, isolated, and backward pawns based on bitboard patterns.
-//  4. Endgame king centralization: as material drops, the winning side's king is rewarded
-//     for being near the center (active king is critical in endgames).
+// Fast components:
+//  1. Material and phase-blended PST.
+//  2. Pawn structure core (doubled/isolated/chain patterns).
+//  3. King centralization scaling by material phase.
+//  4. Extra bitboard heuristics from eval_extender.go:
+//     bishop pair, passed pawns, pawn islands, center/space control,
+//     king shelter, open-file pressure, rook seventh-rank pressure,
+//     and opening development terms.
 func EvaluatePos(position *chess.Position, pst *PST) int {
-	// Primary fast evaluator: bitboard-driven material, PST, pawn structure, and king activity.
 	bitboards, err := position.MarshalBinary()
 	if err != nil {
-		fmt.Printf("Error in bitboard retrieval %v\n", err)
+		return 0
 	}
-	wbb, bbb := bitboards[5], bitboards[11]
-	score := pawnStructure(wbb)*7 - pawnStructure(bbb)*7 //Pawn structure is worth up to ±40 centipawns, so we multiply the score by 7 to scale it appropriately with material and PST scores.
 
-	score += (EvaluateBishopAndRookPair(bitboards[2]) - EvaluateBishopAndRookPair(bitboards[8])) * 2 // Bonus for rook pairs on the same file.
-	score += (EvaluateBishopAndRookPair(bitboards[3]) - EvaluateBishopAndRookPair(bitboards[9])) * 2 // Bonus for bishop pairs on the same file.
+	wbb, bbb := bitboards[5], bitboards[11]
+	// Base pawn-structure term remains cheap and high-signal.
+	score := (pawnStructure(wbb) - pawnStructure(bbb)) * 8
 
 	evaluateFunctionCalls++
 	var blackKingFile, blackKingRank, whiteKingFile, whiteKingRank int
@@ -126,10 +125,8 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 		blackKingFile = bkSq % 8
 		blackKingRank = bkSq / 8
 	}
-	// Start at -200000 to cancel out both kings' values from the material total.
-	// We only want non-king material to drive the endgame detection index.
+	// Start at -200000 to cancel both kings from the non-king material sum.
 	totalMaterial := -200000
-	//Get Pawn Bitboard
 
 	openingScore := 0
 	middleScore := 0
@@ -154,55 +151,54 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 		endScore -= AddPSTViaBitboard(blackBB, &pst[pstEnd][chess.Black][pieceType])
 	}
 
-	// Endgame king centralization:
-	// As material depletes, kings should move toward the center to support pawns and give checkmate.
-	// endGameIndex rises as pieces come off the board; smartEndgameFactor is 0 in the middlegame
-	// and increases proportionally in the endgame.
-	// maxMaterial (7800) = sum of all non-king pieces in starting position:
-	// 2 queens (1800) + 4 rooks (2000) + 4 bishops (1200) + 4 knights (1200) + 16 pawns (1600)
 	const maxMaterial = 7800
 	endGameIndex := maxMaterial - totalMaterial
 	lastTotalMaterial = totalMaterial
 	wopening, wmiddle, wend := phaseWeights(lastTotalMaterial)
 	// Phase weights are normalized to 24.
-	score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 18
-	// Only activate endgame king centralization after ~4900 material is traded.
-	if endGameIndex > 4800 {
+	score += (openingScore*wopening + middleScore*wmiddle + endScore*wend) / 24
+
+	// King activity by phase: centralize in endgame, stay safer in opening/middlegame.
+	if endGameIndex > 5000 {
 		// Use integer-based distance approximation (Manhattan distance from center ~4.5).
 		// Multiply distances by 2 to work in half-squares and avoid float, center at (9,9).
 		blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
 		whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
-		smartEndgameFactor := (endGameIndex - 4800) // /100 * 50 => /2
+		smartEndgameFactor := endGameIndex - 5000
 		// Reward White if Black's king is far from center and White's is close (and vice versa).
-		score += (-whiteDist + blackDist) * smartEndgameFactor / 4
+		score += (-whiteDist + blackDist) * smartEndgameFactor / 5
 	} else {
-		// In non endgame postions reward distance from centers
+		// In non-endgames prefer king distance from center (safety proxy).
 		blackDist := absInt(9-blackKingFile*2) + absInt(9-blackKingRank*2)
 		whiteDist := absInt(9-whiteKingFile*2) + absInt(9-whiteKingRank*2)
-		score += (whiteDist - blackDist) * 4
+		score += (whiteDist - blackDist) * (wopening + 6) / 6
 	}
-	// Soft passed-pawn pressure: rewards pawns that are close to becoming passed.
-	passedPawnPotentialWeight := 20                                      //Ranges from 0-20 depending on material traded
-	endgamePawnsWhite, endgamePawnsBlack := (wbb>>32)<<32, (bbb<<32)>>32 // Only consider pawns on the opponent's half of the board for passed-pawn potential, as central pawns are more likely to become passed and create threats.This also reduces noise during opening from pawns that are still far from promotion and unlikely to become passed for many moves.
-	score += (PassedPawnPotentialScore(endgamePawnsWhite, bbb, chess.White) - PassedPawnPotentialScore(endgamePawnsBlack, wbb, chess.Black)) * passedPawnPotentialWeight
-	score += kingNearOpenFiles(wbb, bitboards[0]) * 5
-	score -= kingNearOpenFiles(bbb, bitboards[6]) * 5
-	score += rookOnOpenFiles(wbb|bbb, bitboards[2]) * 3
-	score -= rookOnOpenFiles(wbb|bbb, bitboards[8]) * 3
 
-	// Castling rights bonus: losing the right to castle permanently is a king safety risk.
+	score += evaluateExtendedPositionalTerms(bitboards, wopening, wmiddle, wend, endGameIndex)
+
+	// Castling rights bonus: valuable mostly in opening/middlegame.
+	kingSideCastleBonus := 20 + wopening*2
+	queenSideCastleBonus := 15 + wopening*2
 	if position.CanCastle(chess.White, chess.KingSide) {
-		score += 50
+		score += kingSideCastleBonus
 	}
 	if position.CanCastle(chess.White, chess.QueenSide) {
-		score += 40
+		score += queenSideCastleBonus
 	}
 	if position.CanCastle(chess.Black, chess.KingSide) {
-		score -= 50
+		score -= kingSideCastleBonus
 	}
 	if position.CanCastle(chess.Black, chess.QueenSide) {
-		score -= 40
+		score -= queenSideCastleBonus
 	}
+
+	// Tempo bonus keeps side-to-move initiative meaningful at equal material.
+	if position.Turn() == chess.White {
+		score += 8
+	} else {
+		score -= 8
+	}
+
 	return score
 }
 
@@ -322,71 +318,59 @@ func EvaluatePos(position *chess.Position, pst *PST) int {
 // // }
 //!LEGACY CODE ENDS
 
-// EvaluateMove scores a move for move ordering purposes — NOT for final evaluation.
-// Higher scores mean the move should be searched earlier, which increases alpha-beta cutoffs.
+// EvaluateMove scores a move for move ordering only (not final position quality).
+// Higher scores are searched earlier to maximize alpha-beta cutoffs.
 //
-// Ordering priorities (highest to lowest):
-//  1. Iterative deepening history (+700): best moves from previous shallower searches
-//  2. Promotions (+300–900): based on promotion piece value
-//  3. MVV-LVA captures: high-value captures with low-value attackers score highest
-//  4. Checks (+100): forcing moves that often reduce reply count
-//  5. Castling (+150): king safety and rook activation
-//  6. Killer moves (+200): quiet moves that caused cutoffs at this depth
+// Priority buckets:
+//  1. Captures/promotions (tactical forcing moves)
+//  2. Previous iteration best move and killer moves
+//  3. Quiet-move history heuristic
+//  4. Checks/castling as tie-break forcing bonuses
 //
-// Note: PV-follow bonus is applied in search.go where the node hash is available.
+// PV-follow bonus is injected in search.go where hash context is available.
 func EvaluateMove(move *chess.Move, position *chess.Position, depth uint8) int {
 	score := 0
-	board := position.Board()
+	turn := position.Turn()
+	moveKey := Move{move.S1(), move.S2()}
 
 	// Iterative deepening history: moves that were best at shallower depths are likely good here too.
-	// Map lookup by square pair — O(1) with no string allocation.
-	if lastBestMoves[Move{move.S1(), move.S2()}] {
-		score += 700
+	if lastBestMoves[moveKey] {
+		score += 1100
 	}
 
-	// MVV-LVA (Most Valuable Victim – Least Valuable Attacker):
-	// Prefer captures that trade up (e.g. pawn takes queen) over trades that lose material.
-	// If the trade is losing (negative), we still assign a small +30 so captures are tried before quiet moves.
-	if move.HasTag(chess.Capture) {
-		victim := board.Piece(move.S2()) // Piece being captured
-		attacker := board.Piece(move.S1())
-		if victim.Type() != chess.NoPieceType {
-			toSet := legacyPieceValues[victim.Type()] - legacyPieceValues[attacker.Type()]
-			if toSet < 1 {
-				toSet = 30 // Floor: even bad captures are searched before quiet moves
-			}
-			score += toSet
+	if depth < maxKillerDepth {
+		entry := killerTable[depth]
+		if entry.count > 0 && entry.moves[0] == moveKey {
+			score += 900
+		} else if entry.count > 1 && entry.moves[1] == moveKey {
+			score += 700
 		}
 	}
 
-	// Lightweight pawn-structure proxy for move ordering quality.
-	// score += pawnMoveOrderingBonus(move, board)
+	if move.HasTag(chess.Capture) {
+		score += moveOrderCaptureScore(position.Board(), move, turn)
+	} else {
+		// History values are bounded and scaled so they nudge ordering without exploding score spread.
+		score += historyMoveScore(turn, move) >> 6
+	}
 
 	// Promotion bonuses: scored by the value of the piece promoted to.
 	if move.Promo() == chess.Queen {
-		score += 900
+		score += 7000
 	} else if move.Promo() == chess.Rook {
-		score += 500
+		score += 6600
 	} else if move.Promo() == chess.Bishop || move.Promo() == chess.Knight {
-		score += 300
+		score += 6300
 	}
 
 	// Check bonus: checks are usually forcing and worth exploring early.
 	if move.HasTag(chess.Check) {
-		score += 100
+		score += 120
 	}
 
 	// Castling is generally positive for king safety.
 	if isCastlingMove(move) {
-		score += 150
-	}
-
-	// Killer move bonus: this move caused a beta cutoff in a sibling node at this depth,
-	// so it's worth trying early in the current node too.
-	k0, k1, kCount := getKillerMoves(depth)
-	moveKey := Move{move.S1(), move.S2()}
-	if kCount > 1 && (k0 == moveKey || k1 == moveKey) {
-		score += 200
+		score += 140
 	}
 
 	return score

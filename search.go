@@ -208,7 +208,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			childHash := fastChildHash(position, child, currentMove, posHash)
 			// Late Move Reduction: moves beyond the first few are likely weaker after good ordering.
 			// Search them at reduced depth first; only do a full search if they look promising.
-			if i >= lmrMoveIndex && depth >= lmrMinDepth && picked.score < 50 {
+			if i >= lmrMoveIndex && depth >= lmrMinDepth && picked.score < 120 {
 				reduction := i / 5
 				if reduction > maxLMRReduction {
 					reduction = maxLMRReduction
@@ -237,6 +237,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			if beta <= alpha {
 				if !currentMove.HasTag(chess.Capture) && currentMove.Promo() == chess.NoPieceType {
 					storeKillerMove(depth, Move{currentMove.S1(), currentMove.S2()})
+					storeHistoryCutoff(position.Turn(), currentMove, depth)
 				}
 				break
 			}
@@ -270,7 +271,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			child := position.Update(currentMove)
 			childHash := fastChildHash(position, child, currentMove, posHash)
 			// Late Move Reduction (minimizer side).
-			if i >= lmrMoveIndex && depth >= lmrMinDepth && picked.score < 50 {
+			if i >= lmrMoveIndex && depth >= lmrMinDepth && picked.score < 120 {
 				reduction := i / 5
 				if reduction > maxLMRReduction {
 					reduction = maxLMRReduction
@@ -298,6 +299,7 @@ func minimax(position *chess.Position, depth uint8, maximizer bool, alpha int, b
 			if beta <= alpha {
 				if !currentMove.HasTag(chess.Capture) && currentMove.Promo() == chess.NoPieceType {
 					storeKillerMove(depth, Move{currentMove.S1(), currentMove.S2()})
+					storeHistoryCutoff(position.Turn(), currentMove, depth)
 				}
 				break
 			}
@@ -465,6 +467,7 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 	quiescenceNodesVisited = 0
 	lastBestMoves = make(map[Move]bool)
 	clearKillerTable()
+	clearHistoryTable()
 	transpositionTable = [ttSize]ttEntry{}
 	clearPV()
 	bestMove := &chess.Move{}
@@ -478,6 +481,9 @@ func iterativeDeepening(position *chess.Position, maxDepth uint8, pst *PST, isWh
 	for i := 0; i < int(maxDepth); i++ {
 		if control != nil && control.shouldStopBeforeDepth(i > 0) {
 			break
+		}
+		if i > 0 {
+			ageHistoryTable()
 		}
 		select {
 		case <-stopSearch:

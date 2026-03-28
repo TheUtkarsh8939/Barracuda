@@ -1,3 +1,4 @@
 Barracuda.exebarracuda
 Barracuda.test
 *.orig
+gui/telegui/frontend/node_modules
