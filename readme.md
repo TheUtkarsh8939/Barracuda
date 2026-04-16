@@ -52,4 +52,7 @@ Barracuda is a UCI chess engine completely written in Golang, The engine is both
 ## Docs
 - For more details there is a 25 page documentation about the engine in `learn.md`
 
+## Optimizations
+  A lot of optimizations for performance have been made to the project considering it is a chess engine after all, there is a full history in `learn.md` but as short, the engine uses Arrays instead of Maps wherever possible, move generation is based on magic bitboards, the zpbrist hashes are calculated incrementally because of xor self inverse and bitboards have replaced every single instance of mail box/ array based piece mapping. 
+  The engine when I first made it had a painfully slow 8 seconds search at depth 5 from starting position, now it searches depth 5 at around 20 milliseconds on my machine
 
